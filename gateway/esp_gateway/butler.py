@@ -41,7 +41,9 @@ def parse_sse_payload(payload: str) -> ButlerEvent | None:
         logger.debug("non-JSON SSE payload ignored: %r", payload[:80])
         return None
     if "delta" in obj:
-        return ButlerEvent("delta", text=obj.get("delta", ""))
+        d = obj.get("delta", "")
+        # Only string deltas are spoken text; ignore any malformed non-string delta.
+        return ButlerEvent("delta", text=d) if isinstance(d, str) else None
     kind = obj.get("type")
     if kind == "device_card":
         return ButlerEvent("card", card=obj.get("card") or {})

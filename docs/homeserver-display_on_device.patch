@@ -1,29 +1,3 @@
-From 3e5b973fdfca220cdacd55b1edd69c5f672a00fc Mon Sep 17 00:00:00 2001
-From: claude-esp build <ron@obsidianos.com>
-Date: Sun, 24 May 2026 10:57:35 +0100
-Subject: [PATCH] feat(butler): add display_on_device tool for ESP32 screen
- control
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
-
-Mirrors display_in_chat: execute() is a no-op; the streaming voice pipeline
-(llm.py) intercepts the call and emits a device_card SSE event for the
-esp-gateway to forward to the device. Registered in ALWAYS_ALLOWED_TOOLS,
-init_resources, ROUTING_CORE_TOOLS, and the voice route; documented in the
-voice system prompt. Card schema in claude-esp/PROTOCOL.md.
-
-Not deployed — review branch only.
----
- butler/api/context.py             |  5 ++
- butler/api/deps.py                |  4 +-
- butler/api/llm.py                 |  7 ++-
- butler/api/routes/voice.py        |  3 ++
- butler/tools/__init__.py          |  2 +
- butler/tools/display_on_device.py | 79 +++++++++++++++++++++++++++++++
- 6 files changed, 98 insertions(+), 2 deletions(-)
- create mode 100644 butler/tools/display_on_device.py
-
 diff --git a/butler/api/context.py b/butler/api/context.py
 index 1cbbf0f..2adcb87 100644
 --- a/butler/api/context.py
@@ -95,7 +69,7 @@ index bd53832..962ac26 100644
                  result = router.handle_request_tools(
                      block.input.get("tools", []),
 diff --git a/butler/api/routes/voice.py b/butler/api/routes/voice.py
-index 8b681b1..8993662 100644
+index 8b681b1..9c0e3a7 100644
 --- a/butler/api/routes/voice.py
 +++ b/butler/api/routes/voice.py
 @@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
@@ -122,6 +96,20 @@ index 8b681b1..8993662 100644
      full_response_parts: list[str] = []
      visual_parts: list[str] = []
  
+@@ -139,8 +142,11 @@ async def stream_voice(
+                 user_id=user_id,
+                 channel="voice",
+             ):
+-                if isinstance(chunk, dict) and chunk.get("type") == "visual_content":
+-                    visual_parts.append(chunk.get("content", ""))
++                if isinstance(chunk, dict):
++                    # Structured events (visual_content, device_card) pass straight
++                    # through as their own SSE event — never wrapped as a text delta.
++                    if chunk.get("type") == "visual_content":
++                        visual_parts.append(chunk.get("content", ""))
+                     yield f"data: {json.dumps(chunk)}\n\n"
+                 else:
+                     full_response_parts.append(chunk)
 diff --git a/butler/tools/__init__.py b/butler/tools/__init__.py
 index 5e13711..5c85133 100644
 --- a/butler/tools/__init__.py
@@ -225,6 +213,3 @@ index 0000000..6374e4b
 +
 +    async def execute(self, **kwargs: Any) -> str:
 +        return "Card displayed on device."
--- 
-2.50.1 (Apple Git-155)
-

@@ -57,7 +57,7 @@ async def run(url: str, token: str, user: str, text: str, wav_path: str, out: st
                 continue
             obj = json.loads(msg)
             print("<<", obj)
-            if obj.get("type") == "say":
+            if obj.get("type") == "say" and isinstance(obj.get("text"), str):
                 said.append(obj["text"])
             if obj.get("type") == "state" and obj.get("value") == "idle":
                 break
