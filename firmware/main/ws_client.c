@@ -6,10 +6,12 @@
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mbedtls/base64.h"
 
 #include "audio.h"
 #include "protocol.h"
@@ -105,7 +107,30 @@ static void handle_json(const char *buf, size_t len) {
             if (cJSON_IsString(v)) ui_set_status(v->valuestring);
         } else if (strcmp(type, MSG_CARD) == 0) {
             const cJSON *c = cJSON_GetObjectItem(root, "card");
+            ESP_LOGI(TAG, "card message received (%s)", c ? "rendering" : "MISSING card field");
             if (c) ui_show_card(c);
+        } else if (strcmp(type, MSG_IMAGE) == 0) {
+            // {"type":"image","format":"png","data":"<base64>"} → decode + display.
+            const cJSON *data = cJSON_GetObjectItem(root, "data");
+            if (cJSON_IsString(data)) {
+                size_t b64len = strlen(data->valuestring);
+                size_t cap = (b64len / 4) * 3 + 4;  // upper bound on decoded size
+                uint8_t *png = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+                if (png) {
+                    size_t olen = 0;
+                    int rc = mbedtls_base64_decode(png, cap, &olen,
+                                                   (const unsigned char *)data->valuestring, b64len);
+                    if (rc == 0 && olen > 0) {
+                        ESP_LOGI(TAG, "image received: %u B png", (unsigned)olen);
+                        ui_show_image(png, olen);  // copies into its own buffer
+                    } else {
+                        ESP_LOGW(TAG, "image base64 decode failed (rc=%d)", rc);
+                    }
+                    free(png);
+                } else {
+                    ESP_LOGE(TAG, "image: no PSRAM for %u B", (unsigned)cap);
+                }
+            }
         } else if (strcmp(type, MSG_READY) == 0) {
             ui_set_status("ready");
             ESP_LOGI(TAG, "gateway ready");
@@ -148,7 +173,9 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *ev) {
             size_t need = s_rxlen + d->data_len + 1;
             if (need > s_rxcap) {
                 size_t ncap = need < 256 ? 256 : need;
-                char *n = realloc(s_rx, ncap);
+                // PSRAM: image messages (base64 PNG) can be tens of KB — keep them
+                // off the internal heap that TLS + WiFi already lean on.
+                char *n = heap_caps_realloc(s_rx, ncap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
                 if (!n) {
                     s_rxlen = 0;
                     s_rxop = 0;

@@ -18,6 +18,7 @@
 #define MSG_TTS_START    "tts_start"
 #define MSG_TTS_END      "tts_end"
 #define MSG_CARD         "card"
+#define MSG_IMAGE        "image"
 #define MSG_USERS        "users"
 #define MSG_ERROR        "error"
 #define MSG_PONG         "pong"

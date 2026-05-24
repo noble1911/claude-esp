@@ -33,6 +33,26 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # LVGL (v9): RGB565 to match the SH8601 panel format used by the BSP
 CONFIG_LV_COLOR_DEPTH_16=y
 
+# Route LVGL allocations through the C library (heap_caps) so large image-decode
+# buffers land in PSRAM instead of the small builtin 64 KB pool.
+# CONFIG_LV_USE_BUILTIN_MALLOC is not set
+CONFIG_LV_USE_CLIB_MALLOC=y
+# PNG decoder for server-rendered screen images (display_image / SVG → PNG).
+CONFIG_LV_USE_LODEPNG=y
+# Image cache (PSRAM via CLIB malloc): decode each PNG once instead of re-decoding
+# per render strip — otherwise large images only partially draw.
+CONFIG_LV_CACHE_DEF_SIZE=1048576
+CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=4
+# Cache-line (64 B) START alignment for LVGL draw buffers — the S3's octal PSRAM
+# rejects DMA from sub-cache-line-aligned buffers, which broke the direct blit of
+# decoded images. STRIDE_ALIGN must stay 1 (tight rows) or the framebuffer shears.
+CONFIG_LV_DRAW_BUF_ALIGN=64
+
+# Small LVGL flush buffer: PSRAM-sourced SPI DMA on this panel rejects single
+# transfers above ~50 KB (observed). Height 40 caps each flush at ~29 KB so
+# full-width image strips transfer successfully (cards never hit it; images did).
+CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=40
+
 # TLS: bundled root CA store so wss:// to the Cloudflare-tunnelled gateway
 # validates without shipping a per-host cert.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

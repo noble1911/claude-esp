@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import wave
@@ -56,6 +57,16 @@ async def run(url: str, token: str, user: str, text: str, wav_path: str, out: st
                 audio.extend(msg)
                 continue
             obj = json.loads(msg)
+            if obj.get("type") == "image":
+                png = base64.b64decode(obj.get("data", ""))
+                path = obj.get("format", "png")
+                fn = f"device_image.{path}"
+                with open(fn, "wb") as f:
+                    f.write(png)
+                print(f"<< image: {len(png)} bytes -> {fn}")
+                if text.startswith("/"):  # debug command (e.g. /testimg): no turn follows
+                    break
+                continue
             print("<<", obj)
             if obj.get("type") == "say" and isinstance(obj.get("text"), str):
                 said.append(obj["text"])

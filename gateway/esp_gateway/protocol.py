@@ -19,6 +19,7 @@ SAY = "say"
 TTS_START = "tts_start"
 TTS_END = "tts_end"
 CARD = "card"
+IMAGE = "image"  # full-screen image: {"type":"image","format":"png","data":"<base64>"}
 USERS = "users"
 ERROR = "error"
 PONG = "pong"

@@ -5,6 +5,7 @@
 #include <strings.h>  // strcasecmp
 
 #include "bsp/esp32_s3_touch_amoled_1_8.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "lvgl.h"
 
@@ -19,6 +20,13 @@ static lv_obj_t *s_talk;         // hold-to-talk button
 static lv_obj_t *s_talk_label;
 static lv_obj_t *s_toast;        // transient overlay banner
 static lv_obj_t *s_toast_label;
+static lv_obj_t *s_image;          // server-rendered image, fills the card area
+static lv_image_dsc_t s_img_dsc[2];// two descriptors, alternated so set_src always refreshes
+static int s_img_slot;
+static uint8_t *s_img_buf;         // displayed PNG bytes (PSRAM) the decoder reads from
+static size_t s_img_len;
+static uint8_t *s_img_next;        // staged PNG awaiting the LVGL task
+static size_t s_img_next_len;
 
 #define COL_TITLE   lv_color_hex(0xffffff)
 #define COL_DIM     lv_color_hex(0x9aa4b2)
@@ -212,22 +220,116 @@ static void render_toast(const cJSON *card) {
 }
 
 // ── public API ──────────────────────────────────────────────────────
-void ui_show_card(const cJSON *card) {
-    if (!s_card || !card) return;
+// Hide the image layer so a card can take the card area back.
+static void hide_image_layer(void) {
+    if (s_image) lv_obj_add_flag(s_image, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Render the card. Invoked via lv_async_call so it runs in the LVGL task context
+// (where the display lock is already held) — never from the WebSocket task.
+static void render_async_cb(void *param) {
+    char *json = (char *)param;
+    cJSON *card = cJSON_Parse(json);
+    cJSON_free(json);
+    if (!card) return;
     const cJSON *op = cJSON_GetObjectItem(card, "op");
     const char *ops = cJSON_IsString(op) ? op->valuestring : "card";
-    if (!bsp_display_lock(300)) return;
+    ESP_LOGI(TAG, "card render op=%s", ops);
     if (strcmp(ops, "clear") == 0) {
+        hide_image_layer();
         lv_obj_clean(s_card);
         lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
     } else if (strcmp(ops, "toast") == 0) {
-        render_toast(card);
+        render_toast(card);  // overlay — may float over an image
     } else if (strcmp(ops, "text") == 0) {
+        hide_image_layer();
         render_text(card);
     } else {
+        hide_image_layer();
         render_card(card);
     }
+    cJSON_Delete(card);
+}
+
+// Swap in the staged PNG and display it in the card area. Runs in the LVGL task
+// (via lv_async_call) where the display lock is held — the lodepng decode happens
+// here on first draw, off the WebSocket task.
+static void show_image_cb(void *param) {
+    (void)param;
+    if (!s_image || !s_img_next) return;
+    if (s_img_buf) free(s_img_buf);  // previous image's bytes — no longer drawn
+    s_img_buf = s_img_next;
+    s_img_len = s_img_next_len;
+    s_img_next = NULL;
+
+    // Read the real dimensions from the PNG IHDR: width @ byte 16, height @ byte 20
+    // (big-endian). Giving LVGL the exact size avoids mis-layout / partial draws.
+    uint32_t w = 0, h = 0;
+    if (s_img_len > 24 && s_img_buf[1] == 'P' && s_img_buf[2] == 'N' && s_img_buf[3] == 'G') {
+        w = ((uint32_t)s_img_buf[16] << 24) | ((uint32_t)s_img_buf[17] << 16) |
+            ((uint32_t)s_img_buf[18] << 8) | s_img_buf[19];
+        h = ((uint32_t)s_img_buf[20] << 24) | ((uint32_t)s_img_buf[21] << 16) |
+            ((uint32_t)s_img_buf[22] << 8) | s_img_buf[23];
+    }
+
+    // Alternate descriptors so the src pointer always differs — otherwise
+    // lv_image_set_src may treat it as unchanged and skip the redraw.
+    s_img_slot ^= 1;
+    lv_image_dsc_t *d = &s_img_dsc[s_img_slot];
+    memset(d, 0, sizeof(*d));
+    d->header.magic = LV_IMAGE_HEADER_MAGIC;
+    d->header.cf = LV_COLOR_FORMAT_RAW;  // encoded PNG; the lodepng decoder handles it
+    d->header.w = w;
+    d->header.h = h;
+    d->data = s_img_buf;
+    d->data_size = s_img_len;
+    lv_image_set_src(s_image, d);
+
+    if (w && h) {
+        lv_obj_set_size(s_image, w, h);
+        lv_obj_align(s_image, LV_ALIGN_TOP_MID, 0, 36);
+    }
+    lv_obj_remove_flag(s_image, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_image);                         // on top of the card
+    if (s_card) lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);  // image replaces the card
+    ESP_LOGI(TAG, "image displayed %ux%u (%u B png)", (unsigned)w, (unsigned)h,
+             (unsigned)s_img_len);
+}
+
+void ui_show_image(const uint8_t *png, size_t len) {
+    if (!s_image || !png || !len) return;
+    uint8_t *buf = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+    if (!buf) {
+        ESP_LOGE(TAG, "image: no PSRAM for %u bytes", (unsigned)len);
+        return;
+    }
+    memcpy(buf, png, len);
+    if (!bsp_display_lock(1000)) {
+        free(buf);
+        ESP_LOGW(TAG, "image: could not schedule (lock)");
+        return;
+    }
+    if (s_img_next) free(s_img_next);  // discard a superseded staged image
+    s_img_next = buf;
+    s_img_next_len = len;
+    lv_async_call(show_image_cb, NULL);
     bsp_display_unlock();
+}
+
+void ui_show_card(const cJSON *card) {
+    if (!s_card || !card) return;
+    // Building a card touches many LVGL objects. Doing that directly from the
+    // WebSocket task (while audio is streaming) fought the display lock and dropped
+    // silently under load. Copy the card and schedule the render into the LVGL task.
+    char *json = cJSON_PrintUnformatted(card);
+    if (!json) return;
+    if (bsp_display_lock(1000)) {
+        lv_async_call(render_async_cb, json);  // runs later, in LVGL context
+        bsp_display_unlock();
+    } else {
+        ESP_LOGW(TAG, "card: could not schedule render (lock)");
+        cJSON_free(json);
+    }
 }
 
 void ui_set_status(const char *text) {
@@ -332,6 +434,14 @@ void ui_init(void) {
     lv_label_set_text(s_talk_label, "Hold to talk");
     lv_obj_set_style_text_color(s_talk_label, COL_TITLE, 0);
     lv_obj_center(s_talk_label);
+
+    // Image layer over the card area (hidden until a server-rendered image arrives).
+    // 352 wide (multiple of 32 px → 64-byte rows) so flush strips are cache-line
+    // aligned for PSRAM DMA. show_image_cb resizes to the PNG's actual dimensions.
+    s_image = lv_image_create(scr);
+    lv_obj_set_size(s_image, 352, 280);
+    lv_obj_align(s_image, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_add_flag(s_image, LV_OBJ_FLAG_HIDDEN);
 
     bsp_display_unlock();
 

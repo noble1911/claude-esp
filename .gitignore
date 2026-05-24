@@ -4,6 +4,7 @@ gateway/.venv/
 *.pyc
 gateway/.env
 *.wav
+gateway/*.png  # devclient test-image dumps (device_image.png)
 
 # ESP-IDF firmware build artifacts (sdkconfig.defaults is the checked-in source)
 firmware/build/

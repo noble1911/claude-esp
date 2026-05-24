@@ -19,9 +19,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ButlerEvent:
-    kind: str  # "delta" | "card" | "visual" | "done"
+    kind: str  # "delta" | "card" | "image" | "visual" | "done"
     text: str = ""
     card: dict | None = None
+    svg: str = ""
 
 
 def parse_sse_payload(payload: str) -> ButlerEvent | None:
@@ -47,6 +48,8 @@ def parse_sse_payload(payload: str) -> ButlerEvent | None:
     kind = obj.get("type")
     if kind == "device_card":
         return ButlerEvent("card", card=obj.get("card") or {})
+    if kind == "device_image":
+        return ButlerEvent("image", svg=obj.get("svg") or "")
     if kind == "visual_content":
         return ButlerEvent("visual", text=obj.get("content", ""))
     return None

@@ -9,6 +9,7 @@ an in-memory fake connection.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
@@ -18,6 +19,7 @@ from typing import Protocol
 from . import protocol as P
 from .butler import ButlerClient
 from .config import Config
+from .render import SAMPLE_SVG, svg_to_png
 from .stt import STT
 from .tts import KokoroTTS
 
@@ -173,8 +175,31 @@ class Session:
         text = (msg.get("text") or "").strip()
         if not text:
             return
+        if text == "/testimg":  # debug: push a sample image without the brain
+            await self._send_image_svg(SAMPLE_SVG)
+            return
         await self._cancel_turn()  # barge-in
         self._start_turn(self._run_turn(text))
+
+    async def _send_image_svg(self, svg: str) -> None:
+        """Rasterize an SVG to PNG and send it as a base64 JSON image message.
+
+        Rasterization is CPU-bound, so it runs in a thread to avoid stalling the
+        event loop (and the concurrent audio sender). base64 keeps the image on a
+        text frame, cleanly separated from the binary TTS audio stream.
+        """
+        if not svg:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            png = await loop.run_in_executor(None, svg_to_png, svg)
+        except Exception as e:  # noqa: BLE001 — surface render failures, don't crash the turn
+            logger.exception("svg rasterize failed")
+            await self._error("render_error", str(e))
+            return
+        b64 = base64.b64encode(png).decode("ascii")
+        logger.info("→ image to device: %d B png (%d B64)", len(png), len(b64))
+        await self._send(type=P.IMAGE, format="png", data=b64)
 
     async def _on_set_user(self, msg: dict) -> None:
         user_id = msg.get("user_id", "")
@@ -212,6 +237,12 @@ class Session:
         await self._run_turn(transcript)
 
     async def _run_turn(self, transcript: str) -> None:
+        logger.info("turn user=%s transcript=%r", self.user_id, transcript[:100])
+        if "test image" in transcript.strip().lower():  # debug shortcut (any phrasing)
+            logger.info("test-image shortcut → sending sample image")
+            await self._send_image_svg(SAMPLE_SVG)
+            await self._send(type=P.STATE, value=P.STATE_IDLE)
+            return
         await self._send(type=P.STATE, value=P.STATE_THINKING)
         # Producer/consumer: synthesize sentences as they arrive and enqueue the
         # PCM, while a concurrent sender streams it to the device at ~real-time.
@@ -234,7 +265,10 @@ class Session:
                             break
                         await self._synth(sentence, audio_q)
                 elif ev.kind == "card":
+                    logger.info("→ forwarding card to device (op=%s)", (ev.card or {}).get("op"))
                     await self._send(type=P.CARD, card=ev.card or {})
+                elif ev.kind == "image":
+                    await self._send_image_svg(ev.svg)
                 elif ev.kind == "visual":
                     await self._send(type=P.CARD, card={"op": "text", "body": ev.text})
                 elif ev.kind == "done":
