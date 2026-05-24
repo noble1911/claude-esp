@@ -15,6 +15,7 @@ static const char *TAG = "audio";
 #define MIC_FRAME_BYTES   640      // 20 ms of PCM16 mono @ 16 kHz
 #define PLAY_CHUNK_BYTES  640
 #define PLAY_BUFFER_BYTES (48 * 1024)
+#define MIC_GAIN_DB       30.0f    // ES8311 defaults very low here (speech ~RMS 60)
 
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
@@ -88,6 +89,10 @@ esp_err_t audio_init(void) {
     // it beforehand (the previous bug) left playback very quiet.
     esp_codec_dev_set_out_vol(s_spk, s_volume);
     ESP_LOGI(TAG, "speaker volume set to %d", s_volume);
+    // Raise mic gain: the ES8311 defaults very low on this board (captured speech
+    // was only ~RMS 60), which made the server speech-gate fragile.
+    esp_codec_dev_set_in_gain(s_mic, MIC_GAIN_DB);
+    ESP_LOGI(TAG, "mic gain set to %.0f dB", MIC_GAIN_DB);
 
     s_play = xStreamBufferCreate(PLAY_BUFFER_BYTES, 1);
     if (!s_play) return ESP_ERR_NO_MEM;
