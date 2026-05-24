@@ -1,0 +1,6 @@
+# 16 MB flash. No flash-resident asset library (unlike pet-esp) — this app
+# streams everything from the gateway, so the app partition gets the room.
+# Name,   Type, SubType,  Offset,  Size,   Flags
+nvs,      data, nvs,      ,        0x6000,
+phy_init, data, phy,      ,        0x1000,
+factory,  app,  factory,  ,        4M,

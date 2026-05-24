@@ -1,0 +1,23 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "app_config.c"
+        "net.c"
+        "ws_client.c"
+        "audio.c"
+        "ui.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp-tls
+        mbedtls
+        json
+        driver
+        esp_websocket_client
+        esp32_s3_touch_amoled_1_8
+        esp_codec_dev
+        lvgl
+)

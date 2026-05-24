@@ -1,0 +1,19 @@
+# Python
+gateway/.venv/
+**/__pycache__/
+*.pyc
+gateway/.env
+*.wav
+
+# ESP-IDF firmware build artifacts (sdkconfig.defaults is the checked-in source)
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/main/secrets.h
+
+# IDE / clangd index cache
+**/.cache/
+
+# macOS
+.DS_Store

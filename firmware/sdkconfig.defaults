@@ -1,0 +1,42 @@
+# ESP-IDF defaults for the Waveshare ESP32-S3-Touch-AMOLED-1.8 voice device.
+# Mirrors pet-esp's known-good board config; per-build sdkconfig is generated.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash: 16 MB QIO
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# Custom partition table (partitions.csv)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# PSRAM: 8 MB octal — LVGL draw buffers + audio buffers live here.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+
+# Performance
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# 1 kHz tick for smooth UI timing
+CONFIG_FREERTOS_HZ=1000
+
+# Main task stack — LVGL widget setup + init chain
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# LVGL (v9): RGB565 to match the SH8601 panel format used by the BSP
+CONFIG_LV_COLOR_DEPTH_16=y
+
+# TLS: bundled root CA store so wss:// to the Cloudflare-tunnelled gateway
+# validates without shipping a per-host cert.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# WebSocket client: allow larger TX so a full mic/text frame fits.
+CONFIG_WS_TRANSPORT=y

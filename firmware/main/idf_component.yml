@@ -1,0 +1,9 @@
+## Managed-component dependencies for the claude-esp voice device.
+## The Waveshare BSP transitively pulls SH8601 display, FT3168 touch, ES8311
+## codec, esp_lvgl_port and LVGL. IDF pinned to 5.3.x — BSP 1.x does not build
+## on IDF 6.x (same constraint as pet-esp).
+dependencies:
+  idf:
+    version: ">=5.3,<6"
+  waveshare/esp32_s3_touch_amoled_1_8: "*"
+  espressif/esp_websocket_client: "*"

@@ -1,0 +1,31 @@
+# Runs the esp-gateway on the shared `homeserver` Docker network, next to
+# butler-api and kokoro-tts. Expose it to the internet by adding a Cloudflare
+# Tunnel route:  esp-gateway.<domain>  ->  http://esp-gateway:8770
+# (WebSocket upgrades traverse the tunnel fine — unlike LiveKit's media.)
+services:
+  esp-gateway:
+    build: .
+    container_name: esp-gateway
+    environment:
+      - GATEWAY_PORT=8770
+      - BUTLER_API_URL=http://butler-api:8000
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - KOKORO_URL=http://kokoro-tts:8880
+      - KOKORO_VOICE=${KOKORO_VOICE:-bf_emma}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GATEWAY_DEVICE_TOKENS=${GATEWAY_DEVICE_TOKENS}
+    ports:
+      - "8770:8770"
+    networks:
+      - homeserver
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8770),3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  homeserver:
+    external: true

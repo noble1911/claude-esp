@@ -1,0 +1,230 @@
+From 3e5b973fdfca220cdacd55b1edd69c5f672a00fc Mon Sep 17 00:00:00 2001
+From: claude-esp build <ron@obsidianos.com>
+Date: Sun, 24 May 2026 10:57:35 +0100
+Subject: [PATCH] feat(butler): add display_on_device tool for ESP32 screen
+ control
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Mirrors display_in_chat: execute() is a no-op; the streaming voice pipeline
+(llm.py) intercepts the call and emits a device_card SSE event for the
+esp-gateway to forward to the device. Registered in ALWAYS_ALLOWED_TOOLS,
+init_resources, ROUTING_CORE_TOOLS, and the voice route; documented in the
+voice system prompt. Card schema in claude-esp/PROTOCOL.md.
+
+Not deployed — review branch only.
+---
+ butler/api/context.py             |  5 ++
+ butler/api/deps.py                |  4 +-
+ butler/api/llm.py                 |  7 ++-
+ butler/api/routes/voice.py        |  3 ++
+ butler/tools/__init__.py          |  2 +
+ butler/tools/display_on_device.py | 79 +++++++++++++++++++++++++++++++
+ 6 files changed, 98 insertions(+), 2 deletions(-)
+ create mode 100644 butler/tools/display_on_device.py
+
+diff --git a/butler/api/context.py b/butler/api/context.py
+index 1cbbf0f..2adcb87 100644
+--- a/butler/api/context.py
++++ b/butler/api/context.py
+@@ -267,6 +267,11 @@ def _build_rules_text(channel: str | None = None) -> str:
+             "lists, links), use display_in_chat to show rich content in the chat "
+             "while providing a brief spoken summary"
+         )
++        parts.append(
++            "- If the user is on a physical device with a screen, use display_on_device "
++            "to show a concise card (weather, short lists, a status, a confirmation, or "
++            "a value/meter) when it helps; always also give a brief spoken summary"
++        )
+ 
+     return "\n".join(parts)
+ 
+diff --git a/butler/api/deps.py b/butler/api/deps.py
+index f92d56a..f75b824 100644
+--- a/butler/api/deps.py
++++ b/butler/api/deps.py
+@@ -17,6 +17,7 @@ from tools import (
+     BookTool,
+     DatabasePool,
+     DisplayInChatTool,
++    DisplayOnDeviceTool,
+     EmbeddingService,
+     GetConversationsTool,
+     GmailTool,
+@@ -61,7 +62,7 @@ from .ratelimit import start_ratelimit_cleanup, stop_ratelimit_cleanup
+ 
+ ALWAYS_ALLOWED_TOOLS: set[str] = {
+     "remember_fact", "recall_facts", "get_user",
+-    "get_conversations", "update_soul", "display_in_chat",
++    "get_conversations", "update_soul", "display_in_chat", "display_on_device",
+     "weather", "server_health", "storage_monitor",
+ }
+ 
+@@ -129,6 +130,7 @@ async def init_resources() -> None:
+         "get_conversations": GetConversationsTool(_db_pool),
+         "update_soul": UpdateSoulTool(_db_pool),
+         "display_in_chat": DisplayInChatTool(),
++        "display_on_device": DisplayOnDeviceTool(),
+     }
+ 
+     # Only register HA tools if configured
+diff --git a/butler/api/llm.py b/butler/api/llm.py
+index bd53832..962ac26 100644
+--- a/butler/api/llm.py
++++ b/butler/api/llm.py
+@@ -85,7 +85,7 @@ def _build_tool_definitions(tools: dict[str, Tool]) -> list[dict]:
+ # Others go in the lightweight catalog and are loaded on demand.
+ ROUTING_CORE_TOOLS: set[str] = {
+     "remember_fact", "recall_facts", "get_user",
+-    "weather", "display_in_chat",
++    "weather", "display_in_chat", "display_on_device",
+     "radarr", "seerr", "books", "sonarr",
+ }
+ 
+@@ -527,6 +527,11 @@ async def stream_chat_with_tools(
+                     "title": block.input.get("title", ""),
+                 }
+ 
++            # Intercept display_on_device: yield a structured card event for the
++            # esp-gateway to forward to the physical device screen.
++            if block.name == "display_on_device":
++                yield {"type": "device_card", "card": dict(block.input)}
++
+             if block.name == "request_tools":
+                 result = router.handle_request_tools(
+                     block.input.get("tools", []),
+diff --git a/butler/api/routes/voice.py b/butler/api/routes/voice.py
+index 8b681b1..8993662 100644
+--- a/butler/api/routes/voice.py
++++ b/butler/api/routes/voice.py
+@@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
+ 
+ from tools import DatabasePool, Tool
+ from tools.display_in_chat import DisplayInChatTool
++from tools.display_on_device import DisplayOnDeviceTool
+ 
+ from ..context import load_user_context
+ from ..deps import get_db_pool, get_embedding_service, get_internal_or_user, get_tools, get_user_tools
+@@ -59,6 +60,7 @@ async def process_voice(
+     )
+     all_tools = await get_user_tools(user_id, tools, pool)
+     all_tools["display_in_chat"] = DisplayInChatTool()
++    all_tools["display_on_device"] = DisplayOnDeviceTool()
+ 
+     response_text = await chat_with_tools(
+         system_prompt=ctx.system_prompt,
+@@ -125,6 +127,7 @@ async def stream_voice(
+     )
+     all_tools = await get_user_tools(user_id, tools, pool)
+     all_tools["display_in_chat"] = DisplayInChatTool()
++    all_tools["display_on_device"] = DisplayOnDeviceTool()
+     full_response_parts: list[str] = []
+     visual_parts: list[str] = []
+ 
+diff --git a/butler/tools/__init__.py b/butler/tools/__init__.py
+index 5e13711..5c85133 100644
+--- a/butler/tools/__init__.py
++++ b/butler/tools/__init__.py
+@@ -47,6 +47,7 @@ from .whatsapp import WhatsAppTool
+ from .self_update import SelfUpdateTool
+ from .media_files import MediaFilesTool
+ from .display_in_chat import DisplayInChatTool
++from .display_on_device import DisplayOnDeviceTool
+ 
+ __all__ = [
+     # Base
+@@ -103,4 +104,5 @@ __all__ = [
+     "MediaFilesTool",
+     # Display in chat (voice-only)
+     "DisplayInChatTool",
++    "DisplayOnDeviceTool",
+ ]
+diff --git a/butler/tools/display_on_device.py b/butler/tools/display_on_device.py
+new file mode 100644
+index 0000000..6374e4b
+--- /dev/null
++++ b/butler/tools/display_on_device.py
+@@ -0,0 +1,79 @@
++"""display_on_device tool — render a structured card on the user's ESP32 screen.
++
++Like display_in_chat, execute() is a deliberate no-op: the streaming pipeline in
++llm.py intercepts the tool call and emits a ``device_card`` SSE event, which the
++esp-gateway forwards to the device to render with LVGL. The card schema is
++documented in claude-esp/PROTOCOL.md.
++"""
++
++from typing import Any
++
++from .base import Tool
++
++
++class DisplayOnDeviceTool(Tool):
++    @property
++    def name(self) -> str:
++        return "display_on_device"
++
++    @property
++    def description(self) -> str:
++        return (
++            "Display a structured card on the user's physical device screen (a small "
++            "ESP32 touchscreen) during a voice conversation. Use this for glanceable "
++            "info that's easier to see than hear — weather, a short list, a status, a "
++            "confirmation, or a single value/meter. Keep it concise: a short title and "
++            "up to ~6 short rows. Always also give a brief spoken summary in your reply."
++        )
++
++    @property
++    def parameters(self) -> dict[str, Any]:
++        return {
++            "type": "object",
++            "properties": {
++                "op": {
++                    "type": "string",
++                    "enum": ["card", "text", "toast", "clear"],
++                    "description": (
++                        "Card type. 'card' = title + rows; 'text' = title + body "
++                        "paragraph; 'toast' = transient banner; 'clear' = clear the screen."
++                    ),
++                },
++                "title": {"type": "string", "description": "Short title (<= ~24 chars)."},
++                "subtitle": {"type": "string", "description": "Optional subtitle."},
++                "rows": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Up to ~6 short lines (for op='card').",
++                },
++                "body": {"type": "string", "description": "Paragraph text (for op='text')."},
++                "message": {"type": "string", "description": "Banner text (for op='toast')."},
++                "icon": {
++                    "type": "string",
++                    "description": (
++                        "Optional icon name: cloud, clock, check, warning, info, music, "
++                        "home, media, calendar, mail."
++                    ),
++                },
++                "accent": {
++                    "type": "string",
++                    "description": "Optional accent color as hex, e.g. #3b82f6.",
++                },
++                "meter": {
++                    "type": "object",
++                    "properties": {
++                        "label": {"type": "string"},
++                        "value": {"type": "number"},
++                    },
++                    "description": "Optional progress meter; value is 0..1.",
++                },
++                "ttl_ms": {
++                    "type": "integer",
++                    "description": "Auto-dismiss after this many ms; 0 or omit = persist.",
++                },
++            },
++            "required": ["op"],
++        }
++
++    async def execute(self, **kwargs: Any) -> str:
++        return "Card displayed on device."
+-- 
+2.50.1 (Apple Git-155)
+
