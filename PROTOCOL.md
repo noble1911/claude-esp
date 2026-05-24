@@ -79,25 +79,39 @@ Claude calls the butler tool `display_on_device`; the butler SSE pipeline emits 
 {
   "op": "card",
   "title": "Weather — London",
-  "subtitle": "Today",
-  "rows": ["18°C, cloudy", "Rain expected 4pm", "Wind 12 mph"],
-  "icon": "cloud",
+  "icon": "refresh",
   "accent": "#3b82f6",
-  "meter": { "label": "Humidity", "value": 0.74 },
+  "subtitle": "Today",
+  "rows": ["Cloudy with light rain"],
+  "fields": [
+    { "label": "Temp", "value": "18°C" },
+    { "label": "Wind", "value": "12 mph" }
+  ],
+  "meters": [ { "label": "Humidity", "value": 0.74 } ],
+  "status": { "text": "Updated", "color": "#16a34a" },
   "ttl_ms": 0
 }
 ```
 
-`op` values the firmware understands in v1:
-- `card` — title + optional subtitle + up to ~6 rows + optional icon/accent/meter.
-- `text` — `{"op":"text","title":"...","body":"..."}` full-screen text.
-- `toast` — `{"op":"toast","message":"...","ttl_ms":3000}` transient banner.
-- `clear` — `{"op":"clear"}` return to idle screen.
-- `image` — deferred (server-rendered PNG blit; heaviest path).
+Card building blocks (combine freely under `op:"card"`):
+- `title` + optional `icon` + `accent` (hex) — the heading.
+- `subtitle` — dim line under the title.
+- `rows[]` — free-text lines.
+- `fields[]` — `{label,value}` rendered **two-column** (label left, value right).
+- `meter` / `meters[]` — `{label,value}` with value 0..1 → accent-coloured progress bar(s).
+- `status` — `{text,color}` → a coloured pill.
 
-`icon` is a name from a fixed firmware set (e.g. `cloud, clock, check, warning,
-info, music, home, media, calendar, mail`); unknown → no icon. `accent` is a hex
-color. `meter.value` is 0..1. `ttl_ms` 0 = persist until replaced or cleared.
+Other `op`s:
+- `text` — `{"op":"text","title":"…","body":"…"}` — title + a wrapped paragraph.
+- `toast` — `{"op":"toast","message":"…","ttl_ms":3000}` — transient overlay banner; auto-hides after `ttl_ms` (default 3000).
+- `clear` — `{"op":"clear"}` — blank the card area.
+- `image` — deferred (server-rendered blit; heaviest path).
+
+`icon` is rendered with LVGL's built-in glyphs; supported: check, ok, warning, alert,
+info, bell, music, audio, media, video, home, mail, image, wifi, battery, location, gps,
+settings, list, calendar, refresh, play, pause, download, upload, power, charge, phone,
+call, file (unknown → no icon). `accent`/`status.color` are hex. `meter` value is 0..1.
+`ttl_ms` 0 = persist (only `toast` auto-dismisses).
 
 ## Lifecycle
 
