@@ -59,13 +59,28 @@ async def test_voice_turn_uses_stt():
     s, conn, butler, tts = make_session(stt_text="turn on the lights")
     await _hello(s)
     await s.handle(json.dumps({"type": "audio_start"}))
-    await s.handle(b"\x00\x00" * 320)  # one 20ms frame of silence
+    # ~0.5 s of non-silent audio (amplitude 1000) so it passes the speech gate.
+    await s.handle(b"\xe8\x03" * 8000)
     await s.handle(json.dumps({"type": "audio_end"}))
     await s._turn
 
     stt_events = [m for m in conn.json_messages() if m["type"] == "stt"]
     assert stt_events and stt_events[0]["text"] == "turn on the lights"
     assert butler.last_transcript == "turn on the lights"
+
+
+async def test_voice_turn_gates_silence():
+    """Near-silent / too-short captures are dropped before STT (no fake turn)."""
+    s, conn, butler, tts = make_session(stt_text="thank you")
+    await _hello(s)
+    await s.handle(json.dumps({"type": "audio_start"}))
+    await s.handle(b"\x00\x00" * 320)  # 20 ms of silence
+    await s.handle(json.dumps({"type": "audio_end"}))
+    if s._turn:
+        await s._turn
+
+    assert [m for m in conn.json_messages() if m["type"] == "stt"] == []
+    assert butler.last_transcript is None
 
 
 async def test_set_user_switches():

@@ -16,6 +16,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
+
 from . import protocol as P
 from .butler import ButlerClient
 from .config import Config
@@ -27,6 +29,21 @@ logger = logging.getLogger(__name__)
 
 MAX_UTTERANCE_SECONDS = 30
 _SENTENCE_END = ".!?\n"
+
+# Gate near-silent / too-short captures before STT: Whisper hallucinates fixed
+# phrases ("Thank you.", "Thanks for watching.") on silence, firing fake turns.
+MIN_SPEECH_SECONDS = 0.35
+MIN_SPEECH_RMS = 200.0  # int16 RMS; room silence ~<150, speech ~>1000 (tune via logs)
+
+
+def audio_rms(pcm: bytes) -> float:
+    """RMS amplitude of PCM16 mono bytes (0 if empty)."""
+    if not pcm:
+        return 0.0
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    if samples.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples * samples)))
 
 
 class HandshakeError(Exception):
@@ -229,6 +246,15 @@ class Session:
         self._turn = None
 
     async def _run_voice_turn(self, pcm: bytes) -> None:
+        # Drop near-silent / too-short captures so Whisper doesn't hallucinate a
+        # phrase and fire a fake turn. Logged so the RMS threshold can be tuned.
+        duration = len(pcm) / (self.capture_rate * 2) if self.capture_rate else 0.0
+        rms = audio_rms(pcm)
+        if duration < MIN_SPEECH_SECONDS or rms < MIN_SPEECH_RMS:
+            logger.info("stt gate: dropped (dur=%.2fs rms=%.0f)", duration, rms)
+            await self._send(type=P.STATE, value=P.STATE_IDLE)
+            return
+        logger.info("stt gate: pass (dur=%.2fs rms=%.0f)", duration, rms)
         transcript = (await self.deps.stt.transcribe(pcm, self.capture_rate)).strip()
         if not transcript:
             await self._send(type=P.STATE, value=P.STATE_IDLE)
