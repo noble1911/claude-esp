@@ -35,19 +35,22 @@ static size_t s_img_next_len;
 #define COL_BODY    lv_color_hex(0xd1d5db)
 #define COL_ACCENT  lv_color_hex(0x3b82f6)
 
-// Idle screen dimming (battery): drop brightness after this much input idle time.
-#define IDLE_DIM_MS  180000  // 3 min
+// Idle power saving (battery): dim after IDLE_DIM_MS, screen off (low power) after
+// IDLE_OFF_MS. CPU/WiFi stay up so the device stays reachable and can wake on a card.
+#define IDLE_DIM_MS  300000  // 5 min  -> dim
+#define IDLE_OFF_MS  600000  // 10 min -> screen off (low power)
 #define BRIGHT_FULL  100
 #define BRIGHT_DIM   10
-static bool s_dimmed;
+#define BRIGHT_OFF   0
+static int s_power_state;  // 0 = full, 1 = dim, 2 = off
 
-// Wake the screen: restore brightness + reset LVGL's idle timer. Touch resets the
-// idle timer automatically; this also wakes for pushed cards/images. LVGL-context only.
+// Wake the screen: restore full brightness + reset LVGL's idle timer. Touch resets
+// the idle timer; this also wakes for button presses and pushed cards. LVGL-context only.
 static void ui_wake(void) {
     lv_display_trigger_activity(NULL);
-    if (s_dimmed) {
+    if (s_power_state != 0) {
         bsp_display_brightness_set(BRIGHT_FULL);
-        s_dimmed = false;
+        s_power_state = 0;
     }
 }
 
@@ -372,6 +375,7 @@ void ui_reset_talk(void) {
 static void talk_cb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_PRESSED) {
+        ui_wake();  // touching to talk also wakes the screen from dim/off
         audio_set_capture(true);
         ws_send_audio_start();
         lv_label_set_text(s_talk_label, "Listening…");
@@ -410,13 +414,10 @@ static void battery_timer_cb(lv_timer_t *t) {
 static void dim_timer_cb(lv_timer_t *t) {
     (void)t;
     uint32_t idle = lv_display_get_inactive_time(NULL);
-    if (idle > IDLE_DIM_MS && !s_dimmed) {
-        bsp_display_brightness_set(BRIGHT_DIM);
-        s_dimmed = true;
-    } else if (idle <= IDLE_DIM_MS && s_dimmed) {
-        bsp_display_brightness_set(BRIGHT_FULL);
-        s_dimmed = false;
-    }
+    int want = (idle > IDLE_OFF_MS) ? 2 : (idle > IDLE_DIM_MS) ? 1 : 0;
+    if (want == s_power_state) return;
+    s_power_state = want;
+    bsp_display_brightness_set(want == 2 ? BRIGHT_OFF : want == 1 ? BRIGHT_DIM : BRIGHT_FULL);
 }
 
 // Boot self-test card: shows the device is up and demonstrates the renderer.
