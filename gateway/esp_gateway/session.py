@@ -33,7 +33,10 @@ _SENTENCE_END = ".!?\n"
 # Gate near-silent / too-short captures before STT: Whisper hallucinates fixed
 # phrases ("Thank you.", "Thanks for watching.") on silence, firing fake turns.
 MIN_SPEECH_SECONDS = 0.35
-MIN_SPEECH_RMS = 200.0  # int16 RMS; room silence ~<150, speech ~>1000 (tune via logs)
+# This board's mic runs quiet: real speech measured ~RMS 48–82, silence/taps ~2–21.
+# Threshold sits just above silence so we never drop real speech (worse than an
+# occasional silence hallucination). Tune via the "stt gate" logs if needed.
+MIN_SPEECH_RMS = 25.0
 
 
 def audio_rms(pcm: bytes) -> float:
