@@ -8,5 +8,6 @@
 // lock internally), except when already inside an LVGL event callback.
 void ui_init(void);
 void ui_set_status(const char *text);       // top status line (connection / state)
+void ui_reset_talk(void);                    // reset the talk button to its idle label
 void ui_show_card(const cJSON *card);        // render a device_card (see PROTOCOL.md)
 void ui_show_image(const uint8_t *png, size_t len);  // full-screen PNG (server-rendered SVG)

@@ -33,6 +33,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # LVGL (v9): RGB565 to match the SH8601 panel format used by the BSP
 CONFIG_LV_COLOR_DEPTH_16=y
 
+# Bigger UI text: Montserrat 18 default (was 14), 20 for card titles. 14 stays
+# enabled for the small corner battery indicator.
+CONFIG_LV_FONT_MONTSERRAT_18=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_18=y
+
 # Route LVGL allocations through the C library (heap_caps) so large image-decode
 # buffers land in PSRAM instead of the small builtin 64 KB pool.
 # CONFIG_LV_USE_BUILTIN_MALLOC is not set
@@ -60,3 +66,9 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
 # WebSocket client: allow larger TX so a full mic/text frame fits.
 CONFIG_WS_TRANSPORT=y
+
+# Bigger TCP send/recv buffers (16 × MSS) so a marginal-WiFi stall during mic
+# upload doesn't fill the 5760 B default and fail the socket write (which dropped
+# the WebSocket every ~90 s). Multiples of LWIP_TCP_MSS (1440).
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=23040
+CONFIG_LWIP_TCP_WND_DEFAULT=23040

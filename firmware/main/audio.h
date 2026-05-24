@@ -18,3 +18,7 @@ void audio_set_capture(bool enabled);
 
 // Register the sink for captured mic frames (the WS client sends them upstream).
 void audio_set_mic_callback(audio_mic_cb_t cb);
+
+// Speaker output volume, 0..100 (applied immediately if the codec is open).
+void audio_set_volume(int vol);
+int audio_get_volume(void);

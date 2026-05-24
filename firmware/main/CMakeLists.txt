@@ -5,6 +5,7 @@ idf_component_register(
         "net.c"
         "ws_client.c"
         "audio.c"
+        "power.c"
         "ui.c"
     INCLUDE_DIRS "."
     REQUIRES

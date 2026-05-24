@@ -156,6 +156,10 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *ev) {
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_connected = false;
         ESP_LOGW(TAG, "ws disconnected");
+        // Reset device state so a mid-turn drop doesn't leave us stuck capturing /
+        // showing "Listening…". State resumes from the gateway on reconnect.
+        audio_set_capture(false);
+        ui_reset_talk();
         ui_set_status("offline");
         break;
     case WEBSOCKET_EVENT_DATA: {
@@ -207,9 +211,15 @@ void ws_start(const app_config_t *cfg) {
     s_cfg = *cfg;
     esp_websocket_client_config_t wcfg = {
         .uri = s_cfg.gateway_uri,
-        .reconnect_timeout_ms = 5000,
+        .reconnect_timeout_ms = 2000,   // reconnect fast so an offline blip is brief
         .network_timeout_ms = 10000,
         .buffer_size = 4096,
+        // TCP keepalive (kernel-level, no extra WS writes): detect a silently-dead
+        // connection on a flaky link in ~20 s instead of waiting for the next write.
+        .keep_alive_enable = true,
+        .keep_alive_idle = 5,
+        .keep_alive_interval = 5,
+        .keep_alive_count = 3,
     };
 #if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
     wcfg.crt_bundle_attach = esp_crt_bundle_attach;  // validate wss:// via root bundle

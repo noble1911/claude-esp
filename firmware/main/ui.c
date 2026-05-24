@@ -10,11 +10,13 @@
 #include "lvgl.h"
 
 #include "audio.h"
+#include "power.h"
 #include "ws_client.h"
 
 static const char *TAG = "ui";
 
 static lv_obj_t *s_status;       // top status line (connection / state)
+static lv_obj_t *s_battery;      // small battery indicator, top-right corner
 static lv_obj_t *s_card;         // card content panel (flex column, rebuilt per card)
 static lv_obj_t *s_talk;         // hold-to-talk button
 static lv_obj_t *s_talk_label;
@@ -90,7 +92,7 @@ static void add_title(const cJSON *card, lv_color_t accent) {
     snprintf(buf, sizeof(buf), "%s%s%s", sym ? sym : "", sym ? "  " : "",
              cJSON_IsString(title) ? title->valuestring : "");
     lv_obj_t *t = add_wrapped_label(buf, accent);
-    (void)t;
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);  // title stands out
 }
 
 // Key/value row: label on the left (dim), value on the right (bright).
@@ -340,6 +342,14 @@ void ui_set_status(const char *text) {
     }
 }
 
+void ui_reset_talk(void) {
+    if (!s_talk_label) return;
+    if (bsp_display_lock(200)) {
+        lv_label_set_text(s_talk_label, "Hold to talk");
+        bsp_display_unlock();
+    }
+}
+
 // Push-to-talk (runs inside the LVGL event context — lock already held).
 static void talk_cb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
@@ -352,6 +362,28 @@ static void talk_cb(lv_event_t *e) {
         ws_send_audio_end();
         lv_label_set_text(s_talk_label, "Hold to talk");
     }
+}
+
+// Refresh the corner battery indicator (runs in the LVGL task via lv_timer, so
+// lv_label_set_text is safe; the I²C read briefly blocks the LVGL task ~10 s apart).
+static void battery_timer_cb(lv_timer_t *t) {
+    (void)t;
+    if (!s_battery) return;
+    int pct = power_battery_percent();
+    if (pct < 0) {  // gauge not ready / no PMIC
+        lv_label_set_text(s_battery, LV_SYMBOL_BATTERY_EMPTY);
+        return;
+    }
+    const char *glyph;
+    if (power_is_charging())   glyph = LV_SYMBOL_CHARGE;
+    else if (pct >= 90)        glyph = LV_SYMBOL_BATTERY_FULL;
+    else if (pct >= 65)        glyph = LV_SYMBOL_BATTERY_3;
+    else if (pct >= 40)        glyph = LV_SYMBOL_BATTERY_2;
+    else if (pct >= 15)        glyph = LV_SYMBOL_BATTERY_1;
+    else                       glyph = LV_SYMBOL_BATTERY_EMPTY;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%s %d%%", glyph, pct);
+    lv_label_set_text(s_battery, buf);
 }
 
 // Boot self-test card: shows the device is up and demonstrates the renderer.
@@ -392,6 +424,13 @@ void ui_init(void) {
     lv_label_set_text(s_status, "starting…");
     lv_obj_set_style_text_color(s_status, COL_DIM, 0);
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 8);
+
+    // Small battery indicator, top-right corner (kept at 14px so it stays subtle).
+    s_battery = lv_label_create(scr);
+    lv_label_set_text(s_battery, LV_SYMBOL_BATTERY_EMPTY);
+    lv_obj_set_style_text_font(s_battery, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_battery, COL_DIM, 0);
+    lv_obj_align(s_battery, LV_ALIGN_TOP_RIGHT, -8, 8);
 
     // Card panel: flex column, rebuilt per card, scrolls if content overflows.
     s_card = lv_obj_create(scr);
@@ -442,6 +481,10 @@ void ui_init(void) {
     lv_obj_set_size(s_image, 352, 280);
     lv_obj_align(s_image, LV_ALIGN_TOP_MID, 0, 36);
     lv_obj_add_flag(s_image, LV_OBJ_FLAG_HIDDEN);
+
+    // Battery: refresh now and every 10 s.
+    lv_timer_t *bat = lv_timer_create(battery_timer_cb, 10000, NULL);
+    battery_timer_cb(bat);
 
     bsp_display_unlock();
 

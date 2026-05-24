@@ -21,6 +21,7 @@ static esp_codec_dev_handle_t s_mic;
 static StreamBufferHandle_t s_play;
 static volatile bool s_capture;
 static audio_mic_cb_t s_cb;
+static int s_volume = 100;  // 0..100; max by default (small speaker, quiet codec)
 
 static void play_task(void *arg) {
     uint8_t buf[PLAY_CHUNK_BYTES];
@@ -77,13 +78,16 @@ esp_err_t audio_init(void) {
         .sample_rate = AUDIO_RATE_HZ,
         .mclk_multiple = 0,
     };
-    esp_codec_dev_set_out_vol(s_spk, 80);
     if (esp_codec_dev_open(s_spk, &fs) != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "speaker open failed");
     }
     if (esp_codec_dev_open(s_mic, &fs) != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "microphone open failed");
     }
+    // Set volume AFTER open — the codec resets to its default on open, so setting
+    // it beforehand (the previous bug) left playback very quiet.
+    esp_codec_dev_set_out_vol(s_spk, s_volume);
+    ESP_LOGI(TAG, "speaker volume set to %d", s_volume);
 
     s_play = xStreamBufferCreate(PLAY_BUFFER_BYTES, 1);
     if (!s_play) return ESP_ERR_NO_MEM;
@@ -103,5 +107,15 @@ void audio_play_pcm(const uint8_t *data, size_t len) {
 }
 
 void audio_set_capture(bool enabled) { s_capture = enabled; }
+
+void audio_set_volume(int vol) {
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    s_volume = vol;
+    if (s_spk) esp_codec_dev_set_out_vol(s_spk, vol);
+    ESP_LOGI(TAG, "volume -> %d", vol);
+}
+
+int audio_get_volume(void) { return s_volume; }
 
 void audio_set_mic_callback(audio_mic_cb_t cb) { s_cb = cb; }

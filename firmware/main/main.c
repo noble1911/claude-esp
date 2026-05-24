@@ -8,6 +8,7 @@
 #include "app_config.h"
 #include "audio.h"
 #include "net.h"
+#include "power.h"
 #include "ui.h"
 #include "ws_client.h"
 
@@ -30,6 +31,7 @@ void app_main(void) {
 
     // Display + LVGL (BSP starts the esp_lvgl_port task internally).
     bsp_display_start();
+    power_init();  // AXP2101 battery readings (I²C bus is up after bsp_display_start)
     ui_init();
     ui_set_status("starting…");
 
