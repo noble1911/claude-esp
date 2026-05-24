@@ -73,7 +73,12 @@ class ButlerClient:
         self, user_id: str, session_id: str, transcript: str
     ) -> AsyncIterator[ButlerEvent]:
         """Stream a single conversational turn, yielding ButlerEvents."""
-        body = {"transcript": transcript, "user_id": user_id, "session_id": session_id}
+        body = {
+            "transcript": transcript,
+            "user_id": user_id,
+            "session_id": session_id,
+            "surface": "device",  # tells butler to proactively use display_on_device cards
+        }
         timeout = httpx.Timeout(10.0, read=180.0)
         async with self._client.stream(
             "POST",

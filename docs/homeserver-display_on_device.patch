@@ -1,3 +1,78 @@
+diff --git a/README.md b/README.md
+index 700e242..1be41c5 100644
+--- a/README.md
++++ b/README.md
+@@ -319,9 +319,7 @@ Butler uses **invite codes** for registration. The first person to log in become
+ 
+ ### 4.3 Set Up Claude Code (Optional)
+ 
+-Claude Code mode adds a terminal icon toggle to the Butler chat. When active, messages go to Claude Code CLI running on the Mac Mini instead of the Claude API — useful for complex agentic tasks like editing files, running scripts, or multi-step server changes. It uses your Claude Max/Pro subscription, not API tokens. Butler can also **delegate to it automatically** via the `run_claude_code` tool when a request needs real shell access (e.g. "Sonarr crashed, restart it") — granted to users with the Claude Code permission.
+-
+-> **Security:** the shim runs under a hardened policy (deny-list of catastrophic commands + a macOS sandbox) and requires a shared-secret token so only Butler can invoke it. See [`docker/claude-code-shim/README.md`](docker/claude-code-shim/README.md) for the full model and tuning guide.
++Claude Code mode adds a terminal icon toggle to the Butler chat. When active, messages go to Claude Code CLI running on the Mac Mini instead of the Claude API — useful for complex agentic tasks like editing files, running scripts, or multi-step server changes. It uses your Claude Max/Pro subscription, not API tokens.
+ 
+ **If you ran `setup.sh`:** It will prompt you to set this up automatically at the end of Phase 8 (Butler). Just answer `y` when asked and then run `claude login` when prompted.
+ 
+@@ -339,18 +337,11 @@ claude login
+ python3 -m venv ~/home-server/docker/claude-code-shim/.venv
+ ~/home-server/docker/claude-code-shim/.venv/bin/pip install aiohttp
+ 
+-# Generate the shared-secret token and set it on BOTH sides:
+-TOKEN=$(openssl rand -hex 32)
+-#  1) butler-api: add to ~/home-server/butler/.env  ->  CLAUDE_CODE_SHIM_TOKEN=$TOKEN
+-#  2) the shim:   put it in the plist's CLAUDE_SHIM_TOKEN (edited below)
+-
+ # Register as a launchd service (auto-starts on boot, restarts on crash)
+ cp ~/home-server/docker/claude-code-shim/claude-code-shim.plist ~/Library/LaunchAgents/
+-#   edit ~/Library/LaunchAgents/claude-code-shim.plist and replace
+-#   REPLACE_WITH_RANDOM_SECRET with $TOKEN, then:
+ launchctl load ~/Library/LaunchAgents/claude-code-shim.plist
+ 
+-# Verify it's running (authenticated:true, policy:true means it's locked down)
++# Verify it's running
+ curl http://localhost:7100/health
+ ```
+ 
+diff --git a/butler/.env.example b/butler/.env.example
+index 6464014..c0e76ed 100644
+--- a/butler/.env.example
++++ b/butler/.env.example
+@@ -267,21 +267,3 @@ ANTHROPIC_MODEL=claude-sonnet-4-20250514
+ 
+ # Maximum web searches per API call (default: 5)
+ # WEB_SEARCH_MAX_USES=5
+-
+-# ===================
+-# Claude Code shim (optional)
+-# ===================
+-# Host-side service that runs `claude --print` so Butler can delegate hands-on
+-# server tasks (restart a container, read logs, edit configs) to Claude Code,
+-# which has real shell access. Powers both the run_claude_code tool and the
+-# /chat/claude-code/stream endpoint. See README section 4.3.
+-#
+-# Shared secret authenticating butler-api to the shim. Generate with
+-# `openssl rand -hex 32` and set the SAME value as CLAUDE_SHIM_TOKEN on the host
+-# shim (in ~/Library/LaunchAgents/claude-code-shim.plist). If left blank, the
+-# shim accepts unauthenticated requests — anyone able to reach port 7100 on the
+-# host could run commands. Strongly recommended to set this.
+-# CLAUDE_CODE_SHIM_TOKEN=
+-#
+-# Override the shim URL (default points at the host via the Docker bridge).
+-# CLAUDE_CODE_SHIM_URL=http://host.docker.internal:7100
+diff --git a/butler/api/config.py b/butler/api/config.py
+index 91edae4..c635cbe 100644
+--- a/butler/api/config.py
++++ b/butler/api/config.py
+@@ -133,9 +133,6 @@ class Settings(BaseSettings):
+ 
+     # Claude Code shim (host-side service that runs `claude --print`)
+     claude_code_shim_url: str = "http://host.docker.internal:7100"
+-    # Shared secret sent as the X-Shim-Token header so only butler-api can
+-    # invoke the shim. Must match CLAUDE_SHIM_TOKEN on the host shim.
+-    claude_code_shim_token: str = ""
+ 
+     # Home Assistant webhook authentication
+     ha_webhook_secret: str = ""
 diff --git a/butler/api/context.py b/butler/api/context.py
 index 1cbbf0f..2adcb87 100644
 --- a/butler/api/context.py
@@ -15,18 +90,21 @@ index 1cbbf0f..2adcb87 100644
      return "\n".join(parts)
  
 diff --git a/butler/api/deps.py b/butler/api/deps.py
-index f92d56a..f75b824 100644
+index 85ce1f3..f75b824 100644
 --- a/butler/api/deps.py
 +++ b/butler/api/deps.py
-@@ -17,6 +17,7 @@ from tools import (
+@@ -15,9 +15,9 @@ from fastapi import Depends, Header, HTTPException
+ from tools import (
+     AlertStateManager,
      BookTool,
+-    ClaudeCodeTool,
      DatabasePool,
      DisplayInChatTool,
 +    DisplayOnDeviceTool,
      EmbeddingService,
      GetConversationsTool,
      GmailTool,
-@@ -61,7 +62,7 @@ from .ratelimit import start_ratelimit_cleanup, stop_ratelimit_cleanup
+@@ -62,7 +62,7 @@ from .ratelimit import start_ratelimit_cleanup, stop_ratelimit_cleanup
  
  ALWAYS_ALLOWED_TOOLS: set[str] = {
      "remember_fact", "recall_facts", "get_user",
@@ -35,7 +113,18 @@ index f92d56a..f75b824 100644
      "weather", "server_health", "storage_monitor",
  }
  
-@@ -129,6 +130,7 @@ async def init_resources() -> None:
+@@ -75,9 +75,7 @@ PERMISSION_TOOL_MAP: dict[str, list[str]] = {
+     "automation": ["schedule_task"],
+     "communication": ["whatsapp"],
+     "admin": ["self_update"],
+-    # Grants Butler the run_claude_code delegation tool (host shell access via
+-    # the shim). Also gates the dedicated /chat/claude-code/stream endpoint.
+-    "claude_code": ["run_claude_code"],
++    "claude_code": [],  # Capability-only permission; no tools to inject into Butler routing
+ }
+ 
+ ALL_PERMISSION_GROUPS: list[str] = sorted(PERMISSION_TOOL_MAP.keys())
+@@ -132,6 +130,7 @@ async def init_resources() -> None:
          "get_conversations": GetConversationsTool(_db_pool),
          "update_soul": UpdateSoulTool(_db_pool),
          "display_in_chat": DisplayInChatTool(),
@@ -43,20 +132,39 @@ index f92d56a..f75b824 100644
      }
  
      # Only register HA tools if configured
+@@ -252,14 +251,6 @@ async def init_resources() -> None:
+     # Self-update tool (always registered — admin permission required)
+     _tools["self_update"] = SelfUpdateTool()
+ 
+-    # Claude Code delegation (always registered; injected only for users with
+-    # the 'claude_code' permission via PERMISSION_TOOL_MAP). Gives Butler an
+-    # escalation path to a real shell on the host for fixing server issues.
+-    _tools["run_claude_code"] = ClaudeCodeTool(
+-        shim_url=settings.claude_code_shim_url,
+-        shim_token=settings.claude_code_shim_token,
+-    )
+-
+     # ── Alert dispatch ──────────────────────────────────────────────
+     # Wire NotificationDispatcher with Push + WhatsApp channels so that
+     # alerts recorded by health/storage tools actually get sent out.
 diff --git a/butler/api/llm.py b/butler/api/llm.py
-index bd53832..962ac26 100644
+index 74d0e4d..962ac26 100644
 --- a/butler/api/llm.py
 +++ b/butler/api/llm.py
-@@ -85,7 +85,7 @@ def _build_tool_definitions(tools: dict[str, Tool]) -> list[dict]:
+@@ -85,11 +85,8 @@ def _build_tool_definitions(tools: dict[str, Tool]) -> list[dict]:
  # Others go in the lightweight catalog and are loaded on demand.
  ROUTING_CORE_TOOLS: set[str] = {
      "remember_fact", "recall_facts", "get_user",
 -    "weather", "display_in_chat",
 +    "weather", "display_in_chat", "display_on_device",
      "radarr", "seerr", "books", "sonarr",
+-    # Escalation path for server fixes — keep core so Claude reliably knows it
+-    # can delegate to a real shell without first round-tripping request_tools.
+-    "run_claude_code",
  }
  
-@@ -527,6 +527,11 @@ async def stream_chat_with_tools(
+ # Only enable routing when there are this many non-core tools.
+@@ -530,6 +527,11 @@ async def stream_chat_with_tools(
                      "title": block.input.get("title", ""),
                  }
  
@@ -68,8 +176,29 @@ index bd53832..962ac26 100644
              if block.name == "request_tools":
                  result = router.handle_request_tools(
                      block.input.get("tools", []),
+diff --git a/butler/api/routes/chat.py b/butler/api/routes/chat.py
+index a40f859..784bc7c 100644
+--- a/butler/api/routes/chat.py
++++ b/butler/api/routes/chat.py
+@@ -337,16 +337,11 @@ async def claude_code_stream(
+             yield f"data: {json.dumps({'type': 'tool_start', 'tool': 'claude_code'})}\n\n"
+ 
+             timeout = aiohttp.ClientTimeout(total=300, connect=5)
+-            # Authenticate to the shim with the shared secret (if configured).
+-            shim_headers = {}
+-            if settings.claude_code_shim_token:
+-                shim_headers["X-Shim-Token"] = settings.claude_code_shim_token
+             async with aiohttp.ClientSession(timeout=timeout) as session:
+                 try:
+                     async with session.post(
+                         f"{settings.claude_code_shim_url}/run",
+                         json={"message": contextualised_message},
+-                        headers=shim_headers,
+                     ) as resp:
+                         if resp.status != 200:
+                             err_msg = "Claude Code shim returned an error. Check that it is running on the host."
 diff --git a/butler/api/routes/voice.py b/butler/api/routes/voice.py
-index 8b681b1..9c0e3a7 100644
+index 8b681b1..f2ec981 100644
 --- a/butler/api/routes/voice.py
 +++ b/butler/api/routes/voice.py
 @@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
@@ -80,15 +209,47 @@ index 8b681b1..9c0e3a7 100644
  
  from ..context import load_user_context
  from ..deps import get_db_pool, get_embedding_service, get_internal_or_user, get_tools, get_user_tools
-@@ -59,6 +60,7 @@ async def process_voice(
+@@ -31,6 +32,27 @@ _FAREWELL_PHRASES = frozenset(
+     ["goodbye", "goodnight", "good night", "talk to you later", "that's all"]
+ )
+ 
++# Extra system guidance for ESP32 device sessions (surface == "device"): tell Claude
++# it has a screen and should proactively draw cards. PWA voice (surface == "voice")
++# keeps using display_in_chat and never sees this.
++_DEVICE_SCREEN_INSTRUCTION = {
++    "type": "text",
++    "text": (
++        "You are speaking through a small physical device that has a touchscreen. "
++        "Proactively call display_on_device to show glanceable information as a card — "
++        "weather, short lists, numbers, a status, a confirmation, or a value/meter — "
++        "whenever it would help the user see it, and always also give a brief spoken "
++        "summary. For any data-heavy or numeric answer (e.g. weather), show a card."
++    ),
++}
++
++
++def _with_surface(system_prompt: list[dict], surface: str) -> list[dict]:
++    """Append device-screen guidance for ESP32 device sessions."""
++    if surface == "device":
++        return list(system_prompt) + [_DEVICE_SCREEN_INSTRUCTION]
++    return system_prompt
++
+ 
+ @router.post("/process", response_model=VoiceProcessResponse)
+ async def process_voice(
+@@ -59,9 +81,10 @@ async def process_voice(
      )
      all_tools = await get_user_tools(user_id, tools, pool)
      all_tools["display_in_chat"] = DisplayInChatTool()
 +    all_tools["display_on_device"] = DisplayOnDeviceTool()
  
      response_text = await chat_with_tools(
-         system_prompt=ctx.system_prompt,
-@@ -125,6 +127,7 @@ async def stream_voice(
+-        system_prompt=ctx.system_prompt,
++        system_prompt=_with_surface(ctx.system_prompt, req.surface),
+         user_message=req.transcript,
+         tools=all_tools,
+         history=ctx.history,
+@@ -125,13 +148,14 @@ async def stream_voice(
      )
      all_tools = await get_user_tools(user_id, tools, pool)
      all_tools["display_in_chat"] = DisplayInChatTool()
@@ -96,7 +257,15 @@ index 8b681b1..9c0e3a7 100644
      full_response_parts: list[str] = []
      visual_parts: list[str] = []
  
-@@ -139,8 +142,11 @@ async def stream_voice(
+     async def generate():
+         try:
+             async for chunk in stream_chat_with_tools(
+-                system_prompt=ctx.system_prompt,
++                system_prompt=_with_surface(ctx.system_prompt, req.surface),
+                 user_message=req.transcript,
+                 tools=all_tools,
+                 history=ctx.history,
+@@ -139,8 +163,11 @@ async def stream_voice(
                  user_id=user_id,
                  channel="voice",
              ):
@@ -110,24 +279,251 @@ index 8b681b1..9c0e3a7 100644
                      yield f"data: {json.dumps(chunk)}\n\n"
                  else:
                      full_response_parts.append(chunk)
+diff --git a/butler/docker-compose.yml b/butler/docker-compose.yml
+index 2fe5569..dadf047 100644
+--- a/butler/docker-compose.yml
++++ b/butler/docker-compose.yml
+@@ -88,10 +88,6 @@ services:
+       - HOST_ARCHITECTURE=${HOST_ARCHITECTURE:-}
+       - HOST_MEMORY_TOTAL_GB=${HOST_MEMORY_TOTAL_GB:-0}
+       - HAS_EXTERNAL_DRIVE=${HAS_EXTERNAL_DRIVE:-false}
+-      # Claude Code shim (host-side `claude --print`). Token must match
+-      # CLAUDE_SHIM_TOKEN on the host shim so butler-api can authenticate.
+-      - CLAUDE_CODE_SHIM_URL=${CLAUDE_CODE_SHIM_URL:-http://host.docker.internal:7100}
+-      - CLAUDE_CODE_SHIM_TOKEN=${CLAUDE_CODE_SHIM_TOKEN:-}
+     volumes:
+       - ./api:/app/api:ro
+       - ./tools:/app/tools:ro
 diff --git a/butler/tools/__init__.py b/butler/tools/__init__.py
-index 5e13711..5c85133 100644
+index 363b75d..5c85133 100644
 --- a/butler/tools/__init__.py
 +++ b/butler/tools/__init__.py
-@@ -47,6 +47,7 @@ from .whatsapp import WhatsAppTool
+@@ -47,7 +47,7 @@ from .whatsapp import WhatsAppTool
  from .self_update import SelfUpdateTool
  from .media_files import MediaFilesTool
  from .display_in_chat import DisplayInChatTool
+-from .claude_code import ClaudeCodeTool
 +from .display_on_device import DisplayOnDeviceTool
  
  __all__ = [
      # Base
-@@ -103,4 +104,5 @@ __all__ = [
+@@ -104,6 +104,5 @@ __all__ = [
      "MediaFilesTool",
      # Display in chat (voice-only)
      "DisplayInChatTool",
+-    # Claude Code delegation (host shell access via shim)
+-    "ClaudeCodeTool",
 +    "DisplayOnDeviceTool",
  ]
+diff --git a/butler/tools/claude_code.py b/butler/tools/claude_code.py
+deleted file mode 100644
+index b001530..0000000
+--- a/butler/tools/claude_code.py
++++ /dev/null
+@@ -1,203 +0,0 @@
+-"""Claude Code delegation tool for Butler.
+-
+-Butler's other server tools are mostly *observational* — `server_health` probes
+-HTTP endpoints, `storage_monitor` reads `df`, `media_files` browses the
+-filesystem. None of them can actually *fix* anything: restart a container, read
+-a service's logs, edit a config, or run an arbitrary diagnostic command. This
+-tool is the escalation path. It hands a natural-language task to Claude Code
+-running on the Mac Mini host (via the claude-code-shim), which has a real shell
+-and full filesystem access to the home server.
+-
+-The shim (``docker/claude-code-shim/app.py``) runs ``claude --print`` under a
+-hardened permission policy (deny-list of catastrophic operations + a macOS
+-Seatbelt sandbox). Butler authenticates to it with a shared secret sent in the
+-``X-Shim-Token`` header. The shim streams Claude Code's output back as SSE; this
+-tool accumulates the text and returns it to the LLM.
+-
+-Because it grants real shell power, the tool is gated by the ``claude_code``
+-permission (see ``PERMISSION_TOOL_MAP`` in ``butler/api/deps.py``) and is only
+-injected into the tool set for admins or explicitly-granted users.
+-
+-Usage:
+-    tool = ClaudeCodeTool(
+-        shim_url="http://host.docker.internal:7100",
+-        shim_token="...",
+-    )
+-    result = await tool.execute(task="Sonarr is unreachable — investigate and restart it")
+-    await tool.close()
+-"""
+-
+-from __future__ import annotations
+-
+-import json
+-import logging
+-from typing import Any
+-
+-import aiohttp
+-
+-from .base import Tool
+-
+-logger = logging.getLogger(__name__)
+-
+-# Claude Code agent loops can run for a while (read logs, restart services,
+-# re-check). Give it a generous budget but keep it bounded so a hung run
+-# doesn't pin a Butler tool round open forever.
+-DEFAULT_TIMEOUT = 300
+-
+-# Cap the text returned to the LLM so a chatty Claude Code session can't blow
+-# out Butler's context window. The shim already streams plain text.
+-MAX_RESULT_CHARS = 16000
+-
+-
+-class ClaudeCodeTool(Tool):
+-    """Delegate a server-administration / debugging / code task to Claude Code.
+-
+-    Calls the host-side shim, which executes ``claude --print`` inside the
+-    home-server repo with shell access, and returns Claude Code's answer.
+-    """
+-
+-    def __init__(
+-        self,
+-        shim_url: str,
+-        shim_token: str | None = None,
+-        timeout: int = DEFAULT_TIMEOUT,
+-    ):
+-        """Initialize the Claude Code delegation tool.
+-
+-        Args:
+-            shim_url: Base URL of the claude-code-shim (e.g.
+-                ``http://host.docker.internal:7100``).
+-            shim_token: Shared secret sent as the ``X-Shim-Token`` header. When
+-                None, no header is sent (the shim may run in warn-only mode).
+-            timeout: Total HTTP timeout in seconds for the delegated task.
+-        """
+-        self._shim_url = shim_url.rstrip("/")
+-        self._shim_token = shim_token or None
+-        self._timeout = aiohttp.ClientTimeout(total=timeout, connect=5)
+-        self._session: aiohttp.ClientSession | None = None
+-
+-    async def _get_session(self) -> aiohttp.ClientSession:
+-        if self._session is None or self._session.closed:
+-            self._session = aiohttp.ClientSession(timeout=self._timeout)
+-        return self._session
+-
+-    async def close(self) -> None:
+-        """Close the HTTP session."""
+-        if self._session and not self._session.closed:
+-            await self._session.close()
+-            self._session = None
+-
+-    # -- Tool interface -------------------------------------------------------
+-
+-    @property
+-    def name(self) -> str:
+-        return "run_claude_code"
+-
+-    @property
+-    def description(self) -> str:
+-        return (
+-            "Delegate a hands-on home-server task to Claude Code, which has full "
+-            "shell and filesystem access on the server. Use this when the user "
+-            "wants you to actually FIX, debug, restart, reconfigure, or "
+-            "investigate something on the server that your other tools cannot do "
+-            "directly — for example restarting a crashed Docker container, "
+-            "reading a service's logs, freeing disk space, editing a config "
+-            "file, or diagnosing why a stack is unhealthy. Provide a complete, "
+-            "self-contained description of the task and any relevant context "
+-            "(service names, error symptoms, what the user reported); Claude "
+-            "Code starts fresh and does not see this conversation. Prefer your "
+-            "lighter read-only tools (server_health, storage_monitor) for simple "
+-            "status questions; reach for this only when real action is needed."
+-        )
+-
+-    @property
+-    def parameters(self) -> dict[str, Any]:
+-        return {
+-            "type": "object",
+-            "properties": {
+-                "task": {
+-                    "type": "string",
+-                    "description": (
+-                        "A complete, self-contained instruction describing what "
+-                        "to do on the server, including any context Claude Code "
+-                        "needs (it cannot see this conversation). E.g. 'The "
+-                        "Sonarr container is unreachable on the media stack. "
+-                        "Check its logs, and if it has crashed, restart it and "
+-                        "confirm it comes back healthy.'"
+-                    ),
+-                },
+-            },
+-            "required": ["task"],
+-        }
+-
+-    async def execute(self, **kwargs: Any) -> str:
+-        task = (kwargs.get("task") or "").strip()
+-        if not task:
+-            return "Error: 'task' is required — describe what Claude Code should do on the server."
+-
+-        headers = {"Content-Type": "application/json"}
+-        if self._shim_token:
+-            headers["X-Shim-Token"] = self._shim_token
+-
+-        try:
+-            session = await self._get_session()
+-            async with session.post(
+-                f"{self._shim_url}/run",
+-                json={"message": task},
+-                headers=headers,
+-            ) as resp:
+-                if resp.status == 401 or resp.status == 403:
+-                    return (
+-                        "Error: Claude Code shim rejected the request "
+-                        "(authentication failed). The shared secret is missing or "
+-                        "incorrect — check CLAUDE_CODE_SHIM_TOKEN."
+-                    )
+-                if resp.status != 200:
+-                    body = (await resp.text())[:500]
+-                    return f"Error: Claude Code shim returned HTTP {resp.status}. {body}".strip()
+-
+-                text = await self._read_sse_text(resp)
+-        except aiohttp.ClientConnectorError:
+-            return (
+-                "Error: Cannot reach the Claude Code shim. Make sure it is running "
+-                "on the Mac Mini host (launchd job 'uk.noblehaus.claude-code-shim', "
+-                "or: python3 ~/home-server/docker/claude-code-shim/app.py)."
+-            )
+-        except TimeoutError:
+-            return (
+-                f"Error: Claude Code timed out after {self._timeout.total:.0f}s. "
+-                "The task may be too large; try breaking it into smaller steps."
+-            )
+-        except Exception as e:
+-            logger.exception("Claude Code delegation failed")
+-            return f"Error delegating to Claude Code: {type(e).__name__}: {e}"
+-
+-        text = text.strip()
+-        if not text:
+-            return "Claude Code finished but produced no output."
+-        if len(text) > MAX_RESULT_CHARS:
+-            text = text[:MAX_RESULT_CHARS] + "\n…(output truncated)"
+-        return text
+-
+-    async def _read_sse_text(self, resp: aiohttp.ClientResponse) -> str:
+-        """Accumulate ``text_delta`` deltas from the shim's SSE stream.
+-
+-        The shim emits ``data: {"type":"text_delta","delta":"..."}`` lines,
+-        keepalive comment lines (``: keepalive``), and a terminal
+-        ``data: [DONE]``. We ignore everything but the text deltas.
+-        """
+-        parts: list[str] = []
+-        async for raw_line in resp.content:
+-            line = raw_line.decode(errors="replace").rstrip("\r\n")
+-            if not line or line.startswith(":"):
+-                continue  # blank delimiter or keepalive comment
+-            if line == "data: [DONE]":
+-                break
+-            if line.startswith("data: "):
+-                try:
+-                    event = json.loads(line[6:])
+-                except json.JSONDecodeError:
+-                    continue
+-                if event.get("type") == "text_delta":
+-                    parts.append(event.get("delta", ""))
+-        return "".join(parts)
 diff --git a/butler/tools/display_on_device.py b/butler/tools/display_on_device.py
 new file mode 100644
 index 0000000..6374e4b
@@ -213,3 +609,497 @@ index 0000000..6374e4b
 +
 +    async def execute(self, **kwargs: Any) -> str:
 +        return "Card displayed on device."
+diff --git a/butler/tools/test_claude_code.py b/butler/tools/test_claude_code.py
+deleted file mode 100644
+index f15fda1..0000000
+--- a/butler/tools/test_claude_code.py
++++ /dev/null
+@@ -1,151 +0,0 @@
+-"""Tests for the Claude Code delegation tool.
+-
+-Run with: pytest butler/tools/test_claude_code.py -v
+-
+-These tests mock the shim's HTTP/SSE responses — no real shim required.
+-"""
+-
+-from __future__ import annotations
+-
+-from unittest.mock import AsyncMock, MagicMock
+-
+-import aiohttp
+-import pytest
+-
+-from .claude_code import ClaudeCodeTool
+-
+-
+-def _sse(*lines: str) -> list[bytes]:
+-    """Encode SSE lines as the byte chunks aiohttp yields from resp.content."""
+-    return [(line + "\n").encode() for line in lines]
+-
+-
+-async def _byte_lines(chunks: list[bytes]):
+-    """Async generator standing in for aiohttp's StreamReader (resp.content)."""
+-    for chunk in chunks:
+-        yield chunk
+-
+-
+-def _make_cm(resp):
+-    """Wrap a mock response in an async context manager (like session.post)."""
+-    cm = MagicMock()
+-    cm.__aenter__ = AsyncMock(return_value=resp)
+-    cm.__aexit__ = AsyncMock(return_value=False)
+-    return cm
+-
+-
+-def _response(status: int, sse_chunks: list[bytes] | None = None, text: str = ""):
+-    resp = MagicMock()
+-    resp.status = status
+-    resp.content = _byte_lines(sse_chunks or [])
+-    resp.text = AsyncMock(return_value=text)
+-    return resp
+-
+-
+-def _tool_with_session(resp=None, post_side_effect=None, shim_token=None):
+-    """Build a ClaudeCodeTool whose session.post is mocked."""
+-    tool = ClaudeCodeTool(shim_url="http://shim:7100/", shim_token=shim_token)
+-    session = MagicMock()
+-    session.closed = False
+-    if post_side_effect is not None:
+-        session.post = MagicMock(side_effect=post_side_effect)
+-    else:
+-        session.post = MagicMock(return_value=_make_cm(resp))
+-    tool._session = session
+-    return tool, session
+-
+-
+-@pytest.mark.asyncio
+-async def test_missing_task_returns_error():
+-    tool = ClaudeCodeTool(shim_url="http://shim:7100")
+-    result = await tool.execute(task="   ")
+-    assert "required" in result.lower()
+-
+-
+-@pytest.mark.asyncio
+-async def test_successful_delegation_accumulates_text():
+-    resp = _response(200, _sse(
+-        'data: {"type":"tool_start","tool":"claude_code"}',
+-        'data: {"type":"text_delta","delta":"Restarted "}',
+-        ': keepalive',
+-        'data: {"type":"text_delta","delta":"sonarr."}',
+-        'data: [DONE]',
+-    ))
+-    tool, _ = _tool_with_session(resp)
+-    result = await tool.execute(task="restart sonarr")
+-    assert result == "Restarted sonarr."
+-
+-
+-@pytest.mark.asyncio
+-async def test_auth_header_sent_when_token_set():
+-    resp = _response(200, _sse('data: {"type":"text_delta","delta":"ok"}', 'data: [DONE]'))
+-    tool, session = _tool_with_session(resp, shim_token="s3cr3t")
+-    await tool.execute(task="do a thing")
+-    _, kwargs = session.post.call_args
+-    assert kwargs["headers"]["X-Shim-Token"] == "s3cr3t"
+-
+-
+-@pytest.mark.asyncio
+-async def test_no_auth_header_when_token_unset():
+-    resp = _response(200, _sse('data: {"type":"text_delta","delta":"ok"}', 'data: [DONE]'))
+-    tool, session = _tool_with_session(resp, shim_token=None)
+-    await tool.execute(task="do a thing")
+-    _, kwargs = session.post.call_args
+-    assert "X-Shim-Token" not in kwargs["headers"]
+-
+-
+-@pytest.mark.asyncio
+-async def test_401_returns_auth_error():
+-    tool, _ = _tool_with_session(_response(401))
+-    result = await tool.execute(task="x")
+-    assert "authentication failed" in result.lower()
+-
+-
+-@pytest.mark.asyncio
+-async def test_non_200_returns_error_with_body():
+-    tool, _ = _tool_with_session(_response(500, text="boom"))
+-    result = await tool.execute(task="x")
+-    assert "500" in result and "boom" in result
+-
+-
+-@pytest.mark.asyncio
+-async def test_connection_error_is_friendly():
+-    err = aiohttp.ClientConnectorError(MagicMock(), OSError("refused"))
+-    tool, _ = _tool_with_session(post_side_effect=err)
+-    result = await tool.execute(task="x")
+-    assert "cannot reach" in result.lower()
+-
+-
+-@pytest.mark.asyncio
+-async def test_timeout_is_reported():
+-    tool, _ = _tool_with_session(post_side_effect=TimeoutError())
+-    result = await tool.execute(task="x")
+-    assert "timed out" in result.lower()
+-
+-
+-@pytest.mark.asyncio
+-async def test_empty_output_message():
+-    tool, _ = _tool_with_session(_response(200, _sse('data: [DONE]')))
+-    result = await tool.execute(task="x")
+-    assert "no output" in result.lower()
+-
+-
+-@pytest.mark.asyncio
+-async def test_long_output_truncated():
+-    long_delta = "A" * 20000
+-    resp = _response(200, _sse(
+-        'data: {"type":"text_delta","delta":"' + long_delta + '"}',
+-        'data: [DONE]',
+-    ))
+-    tool, _ = _tool_with_session(resp)
+-    result = await tool.execute(task="x")
+-    assert result.endswith("…(output truncated)")
+-    assert len(result) < 20000
+-
+-
+-@pytest.mark.asyncio
+-async def test_tool_metadata():
+-    tool = ClaudeCodeTool(shim_url="http://shim:7100")
+-    assert tool.name == "run_claude_code"
+-    assert "task" in tool.parameters["required"]
+-    assert "shell" in tool.description.lower()
+diff --git a/docker/claude-code-shim/README.md b/docker/claude-code-shim/README.md
+deleted file mode 100644
+index 2517f1e..0000000
+--- a/docker/claude-code-shim/README.md
++++ /dev/null
+@@ -1,88 +0,0 @@
+-# Claude Code shim
+-
+-A tiny HTTP service that runs on the **Mac Mini host** (not in Docker) and runs
+-`claude --print` on demand. It lets Butler — which lives in a container — reach a
+-real shell with full filesystem access to the home server, using your Claude
+-subscription rather than metered API tokens.
+-
+-```
+-butler-api (Docker)  ──POST /run (X-Shim-Token)──▶  shim (host)  ──▶  claude --print
+-                     ◀────────── SSE text ──────────              ◀── stdout
+-```
+-
+-Two things call it:
+-
+-- **`run_claude_code` tool** — Butler's normal chat delegates here when a
+-  request needs real action ("restart Sonarr", "free up disk", "why is the photos
+-  stack unhealthy"). Gated by the `claude_code` permission.
+-- **`/chat/claude-code/stream`** — the manual "Claude Code mode" toggle in the PWA.
+-
+-## Security model
+-
+-Claude Code with a shell is powerful and Butler is reachable from the internet
+-via Cloudflare Tunnel, so the shim is locked down in three independent layers:
+-
+-1. **Authentication (`X-Shim-Token`).** `/run` requires a shared secret matching
+-   `CLAUDE_SHIM_TOKEN`. Without it, anything that can reach port 7100 on the host
+-   (the whole LAN, since it binds `0.0.0.0`) could execute commands as your user.
+-   butler-api sends the token from `CLAUDE_CODE_SHIM_TOKEN`. `/health` stays open
+-   so `server_health` can probe it. *If the token is unset the shim still runs but
+-   logs a loud warning and accepts unauthenticated calls — set it.*
+-
+-2. **Deny-list (`permissions.deny`).** Verified fact: in headless `-p` mode an
+-   *allow*-list does **not** contain anything (unlisted/safe commands still run),
+-   so containment comes from denying catastrophic operations — privilege
+-   escalation (`sudo`), power/disk (`shutdown`, `dd`, `diskutil`), Docker data
+-   loss (`docker system prune`, `docker volume rm`), git history rewrites
+-   (`--force`, `reset --hard`), and edits to this shim's own policy. Deny rules
+-   always win over any inherited allow.
+-
+-3. **macOS Seatbelt sandbox.** The hard, OS-level wall. Filesystem writes are
+-   confined to the repo + data dirs; reads of `~/.ssh`, keychains, cloud creds,
+-   etc. are denied; `allowUnsandboxedCommands: false` means a blocked command
+-   cannot silently retry outside the sandbox. `docker`/`docker compose` are
+-   excluded from the sandbox (they need the daemon socket) but remain subject to
+-   the deny-list.
+-
+-We deliberately do **not** use `--dangerously-skip-permissions`, and we do **not**
+-use `--bare` (it forces `ANTHROPIC_API_KEY` auth and would break the subscription
+-login).
+-
+-## Files
+-
+-| File | Purpose |
+-|------|---------|
+-| `app.py` | The aiohttp service. Auth, runs `claude --print --permission-mode dontAsk --settings …`, streams SSE. |
+-| `claude-shim-settings.json` | The deny-list + sandbox policy passed to `claude --settings`. |
+-| `claude-code-shim.plist` | launchd job (auto-start, holds `CLAUDE_SHIM_TOKEN`). |
+-
+-## Setup
+-
+-See README section 4.3. In short: install the `claude` CLI + `claude login`,
+-create the venv, generate a token (`openssl rand -hex 32`) and set it on both
+-sides, then load the launchd job.
+-
+-## Tuning the sandbox
+-
+-The policy errs on the side of safety, so a legitimate repair command may
+-occasionally fail with a sandbox error. To loosen it deliberately:
+-
+-- **A command needs to escape the sandbox** (e.g. talks to a socket the sandbox
+-  blocks): add its prefix to `sandbox.excludedCommands` (like `docker` already
+-  is). It then runs unsandboxed but still under the deny-list.
+-- **A command needs to write somewhere new:** add the path to
+-  `sandbox.filesystem.allowWrite`.
+-- **You want maximum capability over safety** (not recommended given internet
+-  exposure): set `sandbox.allowUnsandboxedCommands: true` so blocked commands
+-  retry unsandboxed.
+-
+-After editing the policy, the change takes effect on the next `/run` (no restart
+-needed — `--settings` is read per invocation). Validate with:
+-
+-```bash
+-curl http://localhost:7100/health   # expect authenticated:true, policy:true
+-```
+-
+-> Behavior was verified against Claude Code v2.1.150. The permission semantics
+-> (`dontAsk` is fail-open; deny-list + sandbox are the real boundaries) are
+-> recorded in the project memory note `claude-code-headless-permissions`.
+diff --git a/docker/claude-code-shim/app.py b/docker/claude-code-shim/app.py
+index d9a62e3..19285fe 100644
+--- a/docker/claude-code-shim/app.py
++++ b/docker/claude-code-shim/app.py
+@@ -1,32 +1,18 @@
+ """Claude Code shim — runs on the Mac Mini host (not in Docker).
+ 
+ Butler API (in Docker) calls: POST http://host.docker.internal:7100/run
+-This service runs `claude --print` and streams stdout as SSE.
+-
+-Security model (see docker/claude-code-shim/claude-shim-settings.json):
+-    * Authentication — /run requires the X-Shim-Token header to match
+-      CLAUDE_SHIM_TOKEN. Without this, anything on the LAN could POST /run and
+-      get arbitrary code execution as this user. If the env var is unset the
+-      shim still runs but logs a loud warning and accepts unauthenticated calls
+-      (backward-compatible; set the token to close the hole).
+-    * Permissions — Claude Code runs with `--permission-mode dontAsk` plus a
+-      `--settings` policy that DENIES catastrophic operations and confines the
+-      filesystem with a macOS Seatbelt sandbox. We deliberately do NOT use
+-      `--dangerously-skip-permissions`. We also avoid `--bare`, which would
+-      force ANTHROPIC_API_KEY auth and break the Claude subscription login.
++This service runs `claude --print <message>` and streams stdout as SSE.
+ 
+ Setup:
+     pip3 install aiohttp
+-    export CLAUDE_SHIM_TOKEN="$(openssl rand -hex 32)"   # match butler-api
+     python3 app.py
+ 
+ Or via launchd (auto-start on boot):
+-    cp claude-code-shim.plist ~/Library/LaunchAgents/   # edit the token first
++    cp claude-code-shim.plist ~/Library/LaunchAgents/
+     launchctl load ~/Library/LaunchAgents/claude-code-shim.plist
+ """
+ 
+ import asyncio
+-import hmac
+ import json
+ import logging
+ import os
+@@ -40,16 +26,6 @@ logger = logging.getLogger(__name__)
+ HOME = Path.home()
+ WORK_DIR = HOME / "home-server"
+ PORT = int(os.environ.get("CLAUDE_SHIM_PORT", "7100"))
+-HOST = os.environ.get("CLAUDE_SHIM_HOST", "0.0.0.0")
+-
+-# Shared secret. butler-api sends it as the X-Shim-Token header. When empty,
+-# the shim accepts unauthenticated requests (with a warning) for backward
+-# compatibility — set it to lock the shim down.
+-SHIM_TOKEN = os.environ.get("CLAUDE_SHIM_TOKEN", "").strip()
+-
+-# Hardened permission policy passed to `claude --settings`. Lives next to this
+-# file so it is version-controlled and reviewable.
+-SETTINGS_FILE = Path(__file__).resolve().parent / "claude-shim-settings.json"
+ 
+ # Prefer Homebrew claude; fall back to PATH
+ CLAUDE_BIN = "/opt/homebrew/bin/claude"
+@@ -66,20 +42,7 @@ if _HOMEBREW_BIN not in _current_path:
+     os.environ["PATH"] = f"{_HOMEBREW_BIN}:{_HOMEBREW_SBIN}:{_current_path}"
+ 
+ 
+-def _authorized(request: web.Request) -> bool:
+-    """Constant-time check of the X-Shim-Token header against CLAUDE_SHIM_TOKEN."""
+-    if not SHIM_TOKEN:
+-        # Unauthenticated mode (warned about at startup). Allow.
+-        return True
+-    provided = request.headers.get("X-Shim-Token", "")
+-    return hmac.compare_digest(provided, SHIM_TOKEN)
+-
+-
+ async def run_claude(request: web.Request) -> web.StreamResponse:
+-    if not _authorized(request):
+-        logger.warning("Rejected /run from %s — missing/invalid X-Shim-Token", request.remote)
+-        raise web.HTTPUnauthorized(reason="missing or invalid X-Shim-Token")
+-
+     body = await request.json()
+     message = body.get("message", "")
+ 
+@@ -96,40 +59,15 @@ async def run_claude(request: web.Request) -> web.StreamResponse:
+ 
+     logger.info("Running claude --print for %d-char message", len(message))
+ 
+-    # Build the command. `dontAsk` proceeds without interactive prompts (so the
+-    # headless run never hangs); the --settings policy supplies the deny-list
+-    # and sandbox that actually contain it. Prompt goes via stdin to avoid the
+-    # message being parsed as CLI flags.
+-    cmd = [
+-        CLAUDE_BIN,
+-        "--print",
+-        "--permission-mode", "dontAsk",
+-    ]
+-    if SETTINGS_FILE.is_file():
+-        cmd += ["--settings", str(SETTINGS_FILE)]
+-    else:
+-        logger.error(
+-            "Permission policy %s is MISSING — Claude Code will run without a "
+-            "deny-list or sandbox. Restore the file before using the shim.",
+-            SETTINGS_FILE,
+-        )
+-
+     proc = await asyncio.create_subprocess_exec(
+-        *cmd,
++        CLAUDE_BIN, "--print", "--dangerously-skip-permissions", message,
+         cwd=str(WORK_DIR),
+-        stdin=asyncio.subprocess.PIPE,
+         stdout=asyncio.subprocess.PIPE,
+         stderr=asyncio.subprocess.STDOUT,
+     )
+ 
+-    assert proc.stdin is not None
+     assert proc.stdout is not None
+ 
+-    # Feed the prompt on stdin and close it so claude knows input is complete.
+-    proc.stdin.write(message.encode())
+-    await proc.stdin.drain()
+-    proc.stdin.close()
+-
+     # claude --print buffers output until completion, so the connection would
+     # sit idle for the full duration. Send SSE comment pings every 15s to keep
+     # the connection alive through Cloudflare and nginx proxies.
+@@ -159,12 +97,7 @@ async def run_claude(request: web.Request) -> web.StreamResponse:
+ 
+ 
+ async def health(request: web.Request) -> web.Response:
+-    return web.json_response({
+-        "status": "ok",
+-        "claude": CLAUDE_BIN,
+-        "authenticated": bool(SHIM_TOKEN),
+-        "policy": SETTINGS_FILE.is_file(),
+-    })
++    return web.json_response({"status": "ok", "claude": CLAUDE_BIN})
+ 
+ 
+ app = web.Application()
+@@ -172,16 +105,5 @@ app.router.add_post("/run", run_claude)
+ app.router.add_get("/health", health)
+ 
+ if __name__ == "__main__":
+-    logger.info("Claude Code shim starting on %s:%d (workdir: %s)", HOST, PORT, WORK_DIR)
+-    if not SHIM_TOKEN:
+-        logger.warning(
+-            "=" * 70 + "\n"
+-            "  CLAUDE_SHIM_TOKEN is NOT set — /run is UNAUTHENTICATED.\n"
+-            "  Anyone who can reach %s:%d can execute commands as this user.\n"
+-            "  Set CLAUDE_SHIM_TOKEN (and the matching CLAUDE_CODE_SHIM_TOKEN on\n"
+-            "  butler-api) to close this hole. See README 4.3.\n" + "=" * 70,
+-            HOST, PORT,
+-        )
+-    if not SETTINGS_FILE.is_file():
+-        logger.error("Permission policy missing: %s", SETTINGS_FILE)
+-    web.run_app(app, host=HOST, port=PORT)
++    logger.info("Claude Code shim starting on port %d (workdir: %s)", PORT, WORK_DIR)
++    web.run_app(app, host="0.0.0.0", port=PORT)
+diff --git a/docker/claude-code-shim/claude-code-shim.plist b/docker/claude-code-shim/claude-code-shim.plist
+index 569229d..85d5009 100644
+--- a/docker/claude-code-shim/claude-code-shim.plist
++++ b/docker/claude-code-shim/claude-code-shim.plist
+@@ -11,16 +11,6 @@
+         <string>/Users/ron/home-server/docker/claude-code-shim/app.py</string>
+     </array>
+ 
+-    <!-- Shared secret so only butler-api can invoke /run. Replace the
+-         placeholder with a random value (openssl rand -hex 32) and set the
+-         SAME value as CLAUDE_CODE_SHIM_TOKEN on butler-api. Edit this in your
+-         copy under ~/Library/LaunchAgents/, not the committed repo file. -->
+-    <key>EnvironmentVariables</key>
+-    <dict>
+-        <key>CLAUDE_SHIM_TOKEN</key>
+-        <string>REPLACE_WITH_RANDOM_SECRET</string>
+-    </dict>
+-
+     <key>RunAtLoad</key>
+     <true/>
+ 
+diff --git a/docker/claude-code-shim/claude-shim-settings.json b/docker/claude-code-shim/claude-shim-settings.json
+deleted file mode 100644
+index 0214ff9..0000000
+--- a/docker/claude-code-shim/claude-shim-settings.json
++++ /dev/null
+@@ -1,64 +0,0 @@
+-{
+-  "$comment": "Hardened permission policy for the claude-code-shim. Passed to `claude --print --settings`. Rule precedence is deny -> ask -> allow (first match wins); deny ALWAYS wins. In headless mode an allow-list does NOT contain (unlisted/safe commands still run), so the deny-list below plus the Seatbelt sandbox are the real boundaries. See docker/claude-code-shim/README.md for the tuning guide.",
+-
+-  "permissions": {
+-    "defaultMode": "dontAsk",
+-    "deny": [
+-      "Bash(sudo *)",
+-      "Bash(sudo)",
+-      "Bash(su *)",
+-      "Bash(doas *)",
+-      "Bash(shutdown *)",
+-      "Bash(reboot *)",
+-      "Bash(halt *)",
+-      "Bash(pmset *)",
+-      "Bash(launchctl *)",
+-      "Bash(diskutil *)",
+-      "Bash(dd *)",
+-      "Bash(mkfs *)",
+-      "Bash(newfs *)",
+-      "Bash(fdisk *)",
+-      "Bash(asr *)",
+-      "Bash(rm -rf /*)",
+-      "Bash(rm -fr /*)",
+-      "Bash(rm -rf ~*)",
+-      "Bash(rm -fr ~*)",
+-      "Bash(rm -rf $HOME*)",
+-      "Bash(docker system prune *)",
+-      "Bash(docker volume rm *)",
+-      "Bash(docker volume prune *)",
+-      "Bash(docker image prune *)",
+-      "Bash(docker network prune *)",
+-      "Bash(docker compose down -v *)",
+-      "Bash(git push --force *)",
+-      "Bash(git push -f *)",
+-      "Bash(git push --force)",
+-      "Bash(git reset --hard *)",
+-      "Bash(git clean -f*)",
+-      "Bash(git filter-branch *)",
+-      "Edit(./docker/claude-code-shim/**)",
+-      "Write(./docker/claude-code-shim/**)"
+-    ]
+-  },
+-
+-  "sandbox": {
+-    "enabled": true,
+-    "failIfUnavailable": true,
+-    "autoAllowBashIfSandboxed": true,
+-    "allowUnsandboxedCommands": false,
+-    "excludedCommands": ["docker", "docker compose", "docker-compose"],
+-    "filesystem": {
+-      "allowWrite": ["~/home-server", "~/HomeServer", "/tmp", "/private/tmp"],
+-      "denyWrite": ["~/home-server/docker/claude-code-shim"],
+-      "denyRead": [
+-        "~/.ssh",
+-        "~/.aws",
+-        "~/.gnupg",
+-        "~/.config/gcloud",
+-        "~/Library/Keychains",
+-        "~/.claude.json",
+-        "~/.config/claude"
+-      ]
+-    }
+-  }
+-}
