@@ -33,10 +33,11 @@ _SENTENCE_END = ".!?\n"
 # Gate near-silent / too-short captures before STT: Whisper hallucinates fixed
 # phrases ("Thank you.", "Thanks for watching.") on silence, firing fake turns.
 MIN_SPEECH_SECONDS = 0.35
-# This board's mic runs quiet: real speech measured ~RMS 48–82, silence/taps ~2–21.
-# Threshold sits just above silence so we never drop real speech (worse than an
-# occasional silence hallucination). Tune via the "stt gate" logs if needed.
-MIN_SPEECH_RMS = 25.0
+# This board's mic runs very quiet AND variable: real speech measured RMS 8–82,
+# dead silence/taps RMS 1–2. Threshold sits just above silence so we essentially
+# never drop real speech (the bigger sin). The real fix is raising the ES8311 mic
+# gain in firmware; until then this stays low. Tune via the "stt gate" logs.
+MIN_SPEECH_RMS = 5.0
 
 
 def audio_rms(pcm: bytes) -> float:

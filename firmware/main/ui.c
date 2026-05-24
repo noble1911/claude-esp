@@ -36,7 +36,7 @@ static size_t s_img_next_len;
 #define COL_ACCENT  lv_color_hex(0x3b82f6)
 
 // Idle screen dimming (battery): drop brightness after this much input idle time.
-#define IDLE_DIM_MS  30000
+#define IDLE_DIM_MS  180000  // 3 min
 #define BRIGHT_FULL  100
 #define BRIGHT_DIM   10
 static bool s_dimmed;
