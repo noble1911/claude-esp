@@ -67,6 +67,7 @@ continuously; the gateway's VAD segments utterances server-side.
 | *binary frames* | TTS PCM16 mono |
 | `{"type":"tts_end","id":N}` | end of TTS audio |
 | `{"type":"card","card":{...}}` | **screen control** — render a structured card (schema below) |
+| `{"type":"image","format":"png","data":"<base64>"}` | **screen control** — full custom image (server-rendered SVG→PNG, see below) |
 | `{"type":"users","users":[{"id","name"}]}` | optional list for the on-screen user picker |
 | `{"type":"error","code":"...","message":"..."}` | error |
 
@@ -105,7 +106,29 @@ Other `op`s:
 - `text` — `{"op":"text","title":"…","body":"…"}` — title + a wrapped paragraph.
 - `toast` — `{"op":"toast","message":"…","ttl_ms":3000}` — transient overlay banner; auto-hides after `ttl_ms` (default 3000).
 - `clear` — `{"op":"clear"}` — blank the card area.
-- `image` — deferred (server-rendered blit; heaviest path).
+
+## Image (`display_image`)
+
+For visuals a structured card can't express (charts, diagrams, styled layouts), Claude
+calls the butler tool `display_image` with a complete **SVG** (sized 352×280). The butler
+SSE pipeline emits a `device_image` event; the **gateway rasterizes** the SVG to a PNG
+(cairosvg, 352×280) and sends it to the device as one JSON text message:
+
+```json
+{ "type": "image", "format": "png", "data": "<base64 PNG>" }
+```
+
+Base64-in-JSON (not a binary frame) keeps the image on a text frame, cleanly separated
+from the binary TTS audio stream that may be flowing concurrently. The device
+base64-decodes, decodes the PNG (LVGL lodepng → PSRAM), and blits it into the card area.
+
+Device constraints baked into the choices above (see also BUILD_LOG / claude-esp memory):
+- **Width 352** (multiple of 32 px → 64-byte rows): the SH8601 QSPI panel's PSRAM-sourced
+  SPI DMA needs cache-line-aligned transfers.
+- **LVGL draw buffer height 40** (~29 KB/flush): the same DMA path rejects single
+  transfers above ~50 KB, so flushes are kept small.
+- ESP32-only: `display_image` is registered for `surface=="device"` sessions, never the
+  website/PWA (which uses `display_in_chat`).
 
 `icon` is rendered with LVGL's built-in glyphs; supported: check, ok, warning, alert,
 info, bell, music, audio, media, video, home, mail, image, wifi, battery, location, gps,

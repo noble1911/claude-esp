@@ -1,8 +1,32 @@
 # Build Log — Butler ESP32 Voice Device
 
-Running log of an autonomous build session (user AFK, remote-control on). Newest first.
-**Nothing here was flashed to the device or deployed to the live home server** — see
-"Needs your verification" at the bottom.
+Running log of the build. Newest first. As of **2026-05-24** the device is flashed and
+working on hardware, and the gateway + butler changes are deployed live (via git). The
+"Needs your verification" notes at the bottom are from the original AFK scaffold session.
+
+## 2026-05-24 — Live on hardware + device images (`display_image`)
+- ✅ **Full voice loop on hardware**: push-to-talk → Groq STT → butler (Claude) → Kokoro TTS,
+  with structured cards (`display_on_device`). Audio distortion fixed (gateway ~1 s burst +
+  device silence-fill + core-pinned audio tasks); WiFi kept awake (`WIFI_PS_NONE`).
+- ✅ **Device images shipped**: Claude calls butler `display_image(svg)` → `device_image` SSE →
+  gateway rasterizes SVG→PNG (cairosvg, **352×280**) → base64 JSON `image` message → firmware
+  base64-decodes + LVGL lodepng-decodes into PSRAM + blits to the card area. Confirmed on
+  hardware (Claude drew a scaled, labelled bar chart). Both `display_on_device` and
+  `display_image` are **ESP32-only** (`surface=="device"`); the website/PWA never sees them.
+- 🔩 **Hard-won firmware fixes for the PNG path** (SH8601 QSPI + octal PSRAM):
+  - Card render moved off the WS task via `lv_async_call` (was silently dropping under audio load).
+  - `LV_USE_CLIB_MALLOC` + `LV_USE_LODEPNG` + image cache (decode into PSRAM, once).
+  - `LV_DRAW_BUF_ALIGN=64` (cache-line start align), `STRIDE_ALIGN=1` (or the screen shears).
+  - **`CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=40`**: PSRAM-sourced SPI DMA rejects single transfers
+    >~50 KB on this panel — capping each flush at ~29 KB is what finally made images render.
+  - Image width 352 = multiple of 32 px (→ 64-byte rows).
+- ⚠️ **Flashing quirk**: after `idf.py flash` (soft reset) the AMOLED stays dark until a real
+  power-cycle (unplug/replug) — the panel/PMIC doesn't re-init on an EN-pin reset.
+- Deploy: gateway at `~/esp-gateway`, butler at `~/home-server` (rebuild `butler-api`), firmware
+  flashed locally. All changes flow through git (`noble1911/claude-esp`, `noble1911/home-server`).
+- Open: card-overlap on transition (cards only; images sidestep it), on-screen user picker.
+
+---
 
 ## Environment (verified)
 - ESP-IDF **v5.3.5** at `~/.espressif/v5.3.5/esp-idf/export.sh` (matches pet-esp `>=5.3,<6`). Also v6.0.1 present (do not use — BSP needs <6).

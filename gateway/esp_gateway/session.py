@@ -238,11 +238,6 @@ class Session:
 
     async def _run_turn(self, transcript: str) -> None:
         logger.info("turn user=%s transcript=%r", self.user_id, transcript[:100])
-        if "test image" in transcript.strip().lower():  # debug shortcut (any phrasing)
-            logger.info("test-image shortcut → sending sample image")
-            await self._send_image_svg(SAMPLE_SVG)
-            await self._send(type=P.STATE, value=P.STATE_IDLE)
-            return
         await self._send(type=P.STATE, value=P.STATE_THINKING)
         # Producer/consumer: synthesize sentences as they arrive and enqueue the
         # PCM, while a concurrent sender streams it to the device at ~real-time.
