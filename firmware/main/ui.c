@@ -35,6 +35,22 @@ static size_t s_img_next_len;
 #define COL_BODY    lv_color_hex(0xd1d5db)
 #define COL_ACCENT  lv_color_hex(0x3b82f6)
 
+// Idle screen dimming (battery): drop brightness after this much input idle time.
+#define IDLE_DIM_MS  30000
+#define BRIGHT_FULL  100
+#define BRIGHT_DIM   10
+static bool s_dimmed;
+
+// Wake the screen: restore brightness + reset LVGL's idle timer. Touch resets the
+// idle timer automatically; this also wakes for pushed cards/images. LVGL-context only.
+static void ui_wake(void) {
+    lv_display_trigger_activity(NULL);
+    if (s_dimmed) {
+        bsp_display_brightness_set(BRIGHT_FULL);
+        s_dimmed = false;
+    }
+}
+
 // ── helpers ─────────────────────────────────────────────────────────
 static lv_color_t parse_hex(const cJSON *obj, const char *key, lv_color_t def) {
     const cJSON *a = obj ? cJSON_GetObjectItem(obj, key) : NULL;
@@ -234,6 +250,7 @@ static void render_async_cb(void *param) {
     cJSON *card = cJSON_Parse(json);
     cJSON_free(json);
     if (!card) return;
+    ui_wake();  // a card arriving lights the screen back up
     const cJSON *op = cJSON_GetObjectItem(card, "op");
     const char *ops = cJSON_IsString(op) ? op->valuestring : "card";
     ESP_LOGI(TAG, "card render op=%s", ops);
@@ -259,6 +276,7 @@ static void render_async_cb(void *param) {
 static void show_image_cb(void *param) {
     (void)param;
     if (!s_image || !s_img_next) return;
+    ui_wake();  // an image arriving lights the screen back up
     if (s_img_buf) free(s_img_buf);  // previous image's bytes — no longer drawn
     s_img_buf = s_img_next;
     s_img_len = s_img_next_len;
@@ -386,6 +404,21 @@ static void battery_timer_cb(lv_timer_t *t) {
     lv_label_set_text(s_battery, buf);
 }
 
+// Dim the screen after IDLE_DIM_MS of no input (LVGL tracks inactivity; touch and
+// ui_wake reset it). Runs in the LVGL task, so the brightness command is serialized
+// with flushing.
+static void dim_timer_cb(lv_timer_t *t) {
+    (void)t;
+    uint32_t idle = lv_display_get_inactive_time(NULL);
+    if (idle > IDLE_DIM_MS && !s_dimmed) {
+        bsp_display_brightness_set(BRIGHT_DIM);
+        s_dimmed = true;
+    } else if (idle <= IDLE_DIM_MS && s_dimmed) {
+        bsp_display_brightness_set(BRIGHT_FULL);
+        s_dimmed = false;
+    }
+}
+
 // Boot self-test card: shows the device is up and demonstrates the renderer.
 static void show_ready_card(void) {
     cJSON *c = cJSON_CreateObject();
@@ -485,6 +518,10 @@ void ui_init(void) {
     // Battery: refresh now and every 10 s.
     lv_timer_t *bat = lv_timer_create(battery_timer_cb, 10000, NULL);
     battery_timer_cb(bat);
+
+    // Full brightness; dim after IDLE_DIM_MS of no input (checked every 2 s).
+    bsp_display_brightness_set(BRIGHT_FULL);
+    lv_timer_create(dim_timer_cb, 2000, NULL);
 
     bsp_display_unlock();
 
