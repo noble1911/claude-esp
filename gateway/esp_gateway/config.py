@@ -27,6 +27,10 @@ class Config:
     # Kokoro TTS
     kokoro_url: str = "http://192.168.1.117:8880"
     default_voice: str = "bf_emma"
+    # Creature voice is scoped to the pet surface, independently of Butler.
+    pet_voice: str = "af_heart"
+    pet_speech_speed: float = 1.12
+    pet_pitch_semitones: float = 6.5
 
     # Groq STT
     groq_api_key: str = ""
@@ -72,6 +76,13 @@ def load_config() -> Config:
     cfg.internal_api_key = os.environ.get("INTERNAL_API_KEY", cfg.internal_api_key)
     cfg.kokoro_url = os.environ.get("KOKORO_URL", cfg.kokoro_url).rstrip("/")
     cfg.default_voice = os.environ.get("KOKORO_VOICE", cfg.default_voice)
+    cfg.pet_voice = os.environ.get("PET_TTS_VOICE", cfg.pet_voice)
+    cfg.pet_speech_speed = float(os.environ.get("PET_TTS_SPEED", cfg.pet_speech_speed))
+    cfg.pet_pitch_semitones = float(os.environ.get("PET_TTS_PITCH", cfg.pet_pitch_semitones))
+    if not 0.85 <= cfg.pet_speech_speed <= 1.3:
+        raise ValueError("PET_TTS_SPEED must be between 0.85 and 1.3")
+    if not 0 <= cfg.pet_pitch_semitones <= 12:
+        raise ValueError("PET_TTS_PITCH must be between 0 and 12 semitones")
     cfg.groq_api_key = os.environ.get("GROQ_API_KEY", cfg.groq_api_key)
     cfg.groq_stt_model = os.environ.get("GROQ_STT_MODEL", cfg.groq_stt_model)
     cfg.default_capture_rate = int(

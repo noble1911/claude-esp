@@ -314,7 +314,10 @@ class Session:
                 if ev.kind == "delta":
                     await self._send(type=P.SAY, text=ev.text)
                     sentence_buf += ev.text
-                    while True:
+                    # Pet replies are deliberately tiny. Synthesize the complete
+                    # reply once, so "Ooh!" and the following line share prosody
+                    # rather than restarting the adult narrator voice each time.
+                    while not self.pet_mode:
                         sentence, sentence_buf = pop_sentence(sentence_buf)
                         if not sentence:
                             break
@@ -358,7 +361,8 @@ class Session:
         """Synthesize one sentence and enqueue its PCM (runs ahead of playback)."""
         if self.pet_mode:
             pcm = await self.deps.tts.synthesize(
-                text, "af_sky", self.playback_rate, speed=1.05, pitch_semitones=3.0
+                text, self.deps.config.pet_voice, self.playback_rate,
+                speed=self.deps.config.pet_speech_speed, pitch_semitones=self.deps.config.pet_pitch_semitones
             )
         else:
             pcm = await self.deps.tts.synthesize(text, self.voice, self.playback_rate)
