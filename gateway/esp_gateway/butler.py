@@ -73,7 +73,7 @@ class ButlerClient:
         return h
 
     async def stream_turn(
-        self, user_id: str, session_id: str, transcript: str, pet: dict | None = None
+        self, user_id: str, session_id: str, transcript: str, pet: dict | None = None, proactive: bool = False
     ) -> AsyncIterator[ButlerEvent]:
         """Stream a single conversational turn, yielding ButlerEvents."""
         body = {
@@ -84,6 +84,7 @@ class ButlerClient:
         }
         if pet is not None:
             body["pet"] = pet
+            body["proactive"] = proactive
         route = "pet/stream" if pet is not None else "stream"
         timeout = httpx.Timeout(10.0, read=180.0)
         async with self._client.stream(

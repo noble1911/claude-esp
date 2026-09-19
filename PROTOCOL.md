@@ -161,3 +161,5 @@ memory works with no per-user secret on the device.
 A dedicated `pet-meadow-*` identity always uses pet mode; clients can also request `surface: "pet"` in hello. Each `audio_start`, `audio_end` and `text` message must include a fresh `pet` object. The gateway forwards it to `/api/voice/pet/stream`, preserving the original transcript. Pet sessions cannot use `set_user` or the `/testimg` shortcut. Existing assistant clients keep the original protocol.
 
 The pet object includes pet_id (16 lowercase hex digits), name, stage, fullness, happiness, energy, cleanliness, stars, genes (8 values), generation, inventory (16 values), friends_met and activity. The backend validates the snapshot and requires a dedicated virtual_pet profile with its own memory. Pet device tokens should be scoped to exactly one pet account.
+
+Pet `text` messages may include `proactive: true` for a device-initiated remark. This flag is forwarded only for pet sessions; the backend applies a short automatic-turn prompt and avoids treating the trigger as child speech. Firmware enforces cooldown, mute, idle and activity gates.

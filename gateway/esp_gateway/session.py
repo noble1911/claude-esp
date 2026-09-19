@@ -216,7 +216,7 @@ class Session:
             await self._send_image_svg(SAMPLE_SVG)
             return
         await self._cancel_turn()  # barge-in
-        self._start_turn(self._run_turn(text))
+        self._start_turn(self._run_turn(text, proactive=self.pet_mode and msg.get("proactive") is True))
 
     async def _send_image_svg(self, svg: str) -> None:
         """Rasterize an SVG to PNG and send it as a base64 JSON image message.
@@ -291,7 +291,7 @@ class Session:
         await self._send(type=P.STT, text=transcript)
         await self._run_turn(transcript)
 
-    async def _run_turn(self, transcript: str) -> None:
+    async def _run_turn(self, transcript: str, proactive: bool = False) -> None:
         logger.info("turn user=%s transcript=%r", self.user_id, transcript[:100])
         await self._send(type=P.STATE, value=P.STATE_THINKING)
         # Producer/consumer: synthesize sentences as they arrive and enqueue the
@@ -304,6 +304,8 @@ class Session:
         sentence_buf = ""
         try:
             kwargs = {"pet": self.pet} if self.pet_mode else {}
+            if proactive:
+                kwargs["proactive"] = True
             async for ev in self.deps.butler.stream_turn(
                 self.user_id, self.session_id, transcript, **kwargs
             ):

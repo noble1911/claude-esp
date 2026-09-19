@@ -72,3 +72,16 @@ async def test_pet_silence_gets_retry_feedback():
     await s._run_voice_turn(b'\0'*32000)
     assert conn.json_messages()[-2]['code']=='no_speech'
     assert conn.json_messages()[-1]['value']=='idle'
+
+@pytest.mark.asyncio
+async def test_spontaneous_marker_reaches_pet_backend():
+    class Brain(FakeButler):
+        async def stream_turn(self,user_id,session_id,transcript,**kwargs):
+            self.received=kwargs
+            yield ButlerEvent('done')
+    b=Brain();s=Session(FakeConn(),Deps(Config(device_tokens={'t':['pet-meadow-test']}),b,FakeSTT(),FakeTTS()))
+    await s.handle(json.dumps({'type':'hello','device_token':'t','user_id':'pet-meadow-test'}))
+    await s.handle(json.dumps({'type':'text','text':'Quiet moment','pet':{'name':'Sprout'},'proactive':True}))
+    await s._turn
+    assert b.received=={'pet':{'name':'Sprout'},'proactive':True}
+    await s.close()
