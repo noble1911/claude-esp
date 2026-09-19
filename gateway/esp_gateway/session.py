@@ -22,6 +22,7 @@ from . import protocol as P
 from .butler import ButlerClient
 from .config import Config
 from .render import SAMPLE_SVG, svg_to_png
+from .music import render_tune
 from .stt import STT
 from .tts import KokoroTTS
 
@@ -302,6 +303,7 @@ class Session:
         self._utterance_id += 1
         sender = asyncio.create_task(self._audio_sender(audio_q, self._utterance_id))
         sentence_buf = ""
+        tune = None
         try:
             kwargs = {"pet": self.pet} if self.pet_mode else {}
             if proactive:
@@ -317,6 +319,13 @@ class Session:
                         if not sentence:
                             break
                         await self._synth(sentence, audio_q)
+                elif ev.kind == "music" and self.pet_mode and not proactive and tune is None:
+                    # Validate before enqueueing. Music follows the complete spoken
+                    # reply and shares its paced sender/cancellation, never a second stream.
+                    try:
+                        tune = render_tune(ev.score, self.playback_rate)
+                    except (ValueError, TypeError):
+                        logger.warning("Ignoring invalid pet music score")
                 elif ev.kind == "card":
                     logger.info("→ forwarding card to device (op=%s)", (ev.card or {}).get("op"))
                     await self._send(type=P.CARD, card=ev.card or {})
@@ -329,6 +338,9 @@ class Session:
             tail = sentence_buf.strip()
             if tail:
                 await self._synth(tail, audio_q)
+            if tune:
+                await audio_q.put(b'\0' * (int(self.playback_rate * .25) * 2))
+                await audio_q.put(tune)
             await audio_q.put(None)  # end-of-stream sentinel
             await sender             # wait for playback to finish draining
         except asyncio.CancelledError:

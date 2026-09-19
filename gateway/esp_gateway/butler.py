@@ -23,6 +23,7 @@ class ButlerEvent:
     text: str = ""
     card: dict | None = None
     svg: str = ""
+    score: dict | None = None
 
 
 def parse_sse_payload(payload: str) -> ButlerEvent | None:
@@ -41,11 +42,15 @@ def parse_sse_payload(payload: str) -> ButlerEvent | None:
     except json.JSONDecodeError:
         logger.debug("non-JSON SSE payload ignored: %r", payload[:80])
         return None
+    if not isinstance(obj, dict):
+        return None
     if "delta" in obj:
         d = obj.get("delta", "")
         # Only string deltas are spoken text; ignore any malformed non-string delta.
         return ButlerEvent("delta", text=d) if isinstance(d, str) else None
     kind = obj.get("type")
+    if kind == "pet_music" and isinstance(obj.get("score"),dict):
+        return ButlerEvent("music",score=obj["score"])
     if kind == "device_card":
         return ButlerEvent("card", card=obj.get("card") or {})
     if kind == "device_image":
