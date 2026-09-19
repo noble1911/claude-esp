@@ -131,3 +131,8 @@ working on hardware, and the gateway + butler changes are deployed live (via git
 ## 2026-09-19 — Little Meadow voice integration
 
 Added a backward-compatible pet mode with per-turn state snapshots and a dedicated Butler pet endpoint. Account switching is disabled for pet sessions. STT failures now recover to idle. All 26 gateway tests pass. Deployed to the existing Mac mini gateway; old image retained as `esp-gateway:pre-pet-voice`. The pet firmware lives in `/Users/ron/IdeaProjects/pet-esp`, with its own voice module, scoped token, microphone/speaker worker, naming screen and connection diagnostics. Full live STT/Claude/TTS and pgvector memory checks passed using a temporary account (subsequently removed).
+
+
+### Pet capture feedback follow-up
+
+Pet sessions now report `no_audio` when a capture ends without PCM and `no_speech` when the silence gate rejects it. Capture byte counts are logged. 28 gateway tests pass. Pet firmware root cause was a failed internal-RAM speech-buffer allocation; fixed in pet-esp using PSRAM-backed static stream storage.

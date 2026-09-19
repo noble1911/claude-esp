@@ -199,10 +199,13 @@ class Session:
     async def _on_audio_end(self) -> None:
         self._listening = False
         pcm = bytes(self._audio)
+        logger.info("capture ended user=%s bytes=%d", self.user_id, len(pcm))
         self._audio.clear()
         if pcm:
             self._start_turn(self._run_voice_turn(pcm))
         else:
+            if self.pet_mode:
+                await self._error("no_audio", "No microphone audio received")
             await self._send(type=P.STATE, value=P.STATE_IDLE)
 
     async def _on_text(self, msg: dict) -> None:
@@ -269,6 +272,8 @@ class Session:
         rms = audio_rms(pcm)
         if duration < MIN_SPEECH_SECONDS or rms < MIN_SPEECH_RMS:
             logger.info("stt gate: dropped (dur=%.2fs rms=%.0f)", duration, rms)
+            if self.pet_mode:
+                await self._error("no_speech", "Please hold and speak closer")
             await self._send(type=P.STATE, value=P.STATE_IDLE)
             return
         logger.info("stt gate: pass (dur=%.2fs rms=%.0f)", duration, rms)

@@ -54,3 +54,21 @@ async def test_stt_failure_recovers():
     await s._run_voice_turn(b'\xff\x1f'*16000)
     assert conn.json_messages()[-2]['code']=='stt_error'
     assert conn.json_messages()[-1]['value']=='idle'
+
+@pytest.mark.asyncio
+async def test_pet_missing_microphone_audio_is_not_silently_ignored():
+    conn=FakeConn();s=Session(conn,Deps(Config(device_tokens={'t':['pet-meadow-test']}),FakeButler(),FakeSTT(),FakeTTS()))
+    await s.handle(json.dumps({'type':'hello','device_token':'t','user_id':'pet-meadow-test'}))
+    await s.handle(json.dumps({'type':'audio_start','pet':{'name':'Sprout'}}))
+    await s.handle(json.dumps({'type':'audio_end','pet':{'name':'Sprout'}}))
+    assert conn.json_messages()[-2]['code']=='no_audio'
+    assert conn.json_messages()[-1]['value']=='idle'
+    await s.close()
+
+@pytest.mark.asyncio
+async def test_pet_silence_gets_retry_feedback():
+    conn=FakeConn();s=Session(conn,Deps(Config(),FakeButler(),FakeSTT(),FakeTTS()))
+    s.pet_mode=True
+    await s._run_voice_turn(b'\0'*32000)
+    assert conn.json_messages()[-2]['code']=='no_speech'
+    assert conn.json_messages()[-1]['value']=='idle'
