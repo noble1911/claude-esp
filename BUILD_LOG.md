@@ -126,3 +126,8 @@ working on hardware, and the gateway + butler changes are deployed live (via git
    Set WiFi/gateway/token/user via the `-DCFG_*` build flags (see `firmware/README.md`).
 4. **End-to-end** — once the gateway is deployed and the device flashed: hold-to-talk →
    hear Claude → see a card. Then consider the open-mic VAD upgrade (Phase 7).
+
+
+## 2026-09-19 — Little Meadow voice integration
+
+Added a backward-compatible pet mode with per-turn state snapshots and a dedicated Butler pet endpoint. Account switching is disabled for pet sessions. STT failures now recover to idle. All 26 gateway tests pass. Deployed to the existing Mac mini gateway; old image retained as `esp-gateway:pre-pet-voice`. The pet firmware lives in `/Users/ron/IdeaProjects/pet-esp`, with its own voice module, scoped token, microphone/speaker worker, naming screen and connection diagnostics. Full live STT/Claude/TTS and pgvector memory checks passed using a temporary account (subsequently removed).

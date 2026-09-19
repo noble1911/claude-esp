@@ -95,6 +95,8 @@ class Session:
         self._listening = False
         self._turn: asyncio.Task | None = None
         self._utterance_id = 0
+        self.pet_mode = False
+        self.pet = None
 
     # ── outbound helpers ────────────────────────────────────────────
     async def _send(self, **obj) -> None:
@@ -118,6 +120,15 @@ class Session:
             await self._error("expected_hello")
             raise HandshakeError("first message was not hello")
 
+        if self.pet_mode and mtype in (P.AUDIO_START, P.AUDIO_END, P.TEXT):
+            pet = msg.get("pet")
+            if not isinstance(pet, dict) or len(json.dumps(pet)) > 4096:
+                await self._error("missing_pet", "Fresh pet state required")
+                return
+            self.pet = pet
+        if self.pet_mode and mtype == P.SET_USER:
+            await self._error("pet_user_locked")
+            return
         if mtype == P.HELLO:
             await self._on_hello(msg)
         elif mtype == P.AUDIO_START:
@@ -129,6 +140,8 @@ class Session:
         elif mtype == P.SET_USER:
             await self._on_set_user(msg)
         elif mtype == P.CANCEL:
+            self._listening = False
+            self._audio.clear()
             await self._cancel_turn()
             await self._send(type=P.STATE, value=P.STATE_IDLE)
         elif mtype == P.PING:
@@ -150,6 +163,7 @@ class Session:
             await self._error("missing_user", "user_id required")
             raise HandshakeError("missing user_id")
 
+        self.pet_mode = msg.get("surface") == "pet" or user_id.startswith("pet-meadow-")
         self.allowed_users = allowed
         self.user_id = user_id
         self.session_id = str(uuid.uuid4())
@@ -195,7 +209,7 @@ class Session:
         text = (msg.get("text") or "").strip()
         if not text:
             return
-        if text == "/testimg":  # debug: push a sample image without the brain
+        if not self.pet_mode and text == "/testimg":  # debug: push a sample image without the brain
             await self._send_image_svg(SAMPLE_SVG)
             return
         await self._cancel_turn()  # barge-in
@@ -258,7 +272,14 @@ class Session:
             await self._send(type=P.STATE, value=P.STATE_IDLE)
             return
         logger.info("stt gate: pass (dur=%.2fs rms=%.0f)", duration, rms)
-        transcript = (await self.deps.stt.transcribe(pcm, self.capture_rate)).strip()
+        await self._send(type=P.STATE, value=P.STATE_THINKING)
+        try:
+            transcript = (await self.deps.stt.transcribe(pcm, self.capture_rate)).strip()
+        except Exception:
+            logger.exception("STT failed")
+            await self._error("stt_error", "Please try again")
+            await self._send(type=P.STATE, value=P.STATE_IDLE)
+            return
         if not transcript:
             await self._send(type=P.STATE, value=P.STATE_IDLE)
             return
@@ -277,8 +298,9 @@ class Session:
         sender = asyncio.create_task(self._audio_sender(audio_q, self._utterance_id))
         sentence_buf = ""
         try:
+            kwargs = {"pet": self.pet} if self.pet_mode else {}
             async for ev in self.deps.butler.stream_turn(
-                self.user_id, self.session_id, transcript
+                self.user_id, self.session_id, transcript, **kwargs
             ):
                 if ev.kind == "delta":
                     await self._send(type=P.SAY, text=ev.text)
