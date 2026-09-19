@@ -60,7 +60,7 @@ class FakeTTS:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def synthesize(self, text: str, voice: str, dst_rate: int) -> bytes:
+    async def synthesize(self, text: str, voice: str, dst_rate: int, **kwargs) -> bytes:
         self.calls.append(text)
         # 50 ms of silence at dst_rate
         return to_pcm_bytes(np.zeros(int(dst_rate * 0.05), dtype=np.int16))

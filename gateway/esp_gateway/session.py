@@ -344,7 +344,12 @@ class Session:
 
     async def _synth(self, text: str, audio_q: asyncio.Queue) -> None:
         """Synthesize one sentence and enqueue its PCM (runs ahead of playback)."""
-        pcm = await self.deps.tts.synthesize(text, self.voice, self.playback_rate)
+        if self.pet_mode:
+            pcm = await self.deps.tts.synthesize(
+                text, "af_sky", self.playback_rate, speed=1.05, pitch_semitones=3.0
+            )
+        else:
+            pcm = await self.deps.tts.synthesize(text, self.voice, self.playback_rate)
         if pcm:
             await audio_q.put(pcm)
 
