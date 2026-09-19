@@ -384,7 +384,10 @@ class Session:
                 # Burst ~1 s up front so the device builds a deep jitter buffer
                 # that rides out marginal-WiFi stalls, then pace ~real-time.
                 if sent > 50:
-                    await asyncio.sleep(0.018)
+                    # The pet has a 96 KB (~3 s) buffer. Pace at playback rate
+                    # after the initial burst, so speech + a tune cannot steadily
+                    # accumulate the old 10% lead and overflow it.
+                    await asyncio.sleep(0.020 if self.pet_mode else 0.018)
         if started:
             await self._send(type=P.TTS_END, id=uid)
 
