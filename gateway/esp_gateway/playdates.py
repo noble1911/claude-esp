@@ -289,9 +289,15 @@ async def play_connection(ws, game):
                 raise ValueError('Invalid game message')
             game.handle(player,msg)
     except (ValueError, TypeError, KeyError) as exc:
+        if player:
+            game.disconnect(player)
+            player = None
         await ws.close(code=4001, reason=str(exc)[:100])
     except Exception:
         LOG.info('playdates connection ended', exc_info=False)
+        if player:
+            game.disconnect(player)
+            player = None
         await ws.close(code=4000, reason='Reconnect to play')
     finally:
         if writer:

@@ -147,3 +147,17 @@ async def test_real_websocket_game_and_bad_messages(game):
             with pytest.raises(websockets.ConnectionClosed):await bad.recv()
     finally:
         server.close();await server.wait_closed()
+
+async def test_timeout_publishes_offline_before_waiting_for_socket_close(game):
+    import asyncio
+    class TimedOutSocket:
+        first=True
+        async def recv(self):
+            if self.first:
+                self.first=False
+                return json.dumps(hello())
+            raise asyncio.TimeoutError()
+        async def send(self,data):pass
+        async def close(self,**kwargs):
+            assert game.players['alice'].emit is None
+    await play_connection(TimedOutSocket(),game)
