@@ -163,3 +163,24 @@ A dedicated `pet-meadow-*` identity always uses pet mode; clients can also reque
 The pet object includes pet_id (16 lowercase hex digits), name, stage, fullness, happiness, energy, cleanliness, stars, genes (8 values), generation, inventory (16 values), friends_met and activity. The backend validates the snapshot and requires a dedicated virtual_pet profile with its own memory. Pet device tokens should be scoped to exactly one pet account.
 
 Pet `text` messages may include `proactive: true` for a device-initiated remark. This flag is forwarded only for pet sessions; the backend applies a short automatic-turn prompt and avoids treating the trigger as child speech. Firmware enforces cooldown, mute, idle and activity gates.
+
+### Pet voice presets and auditions
+
+Pet firmware may attach `voice_preset` to `audio_start`, `audio_end`, and `text`
+messages. It is a stable ID: `tiny_sprout`, `sunny`, `soft`, `warm`, or `low`.
+The field is separate from the fresh `pet` snapshot and is not sent to the brain.
+Omitting it preserves the gateway's existing `PET_TTS_*` defaults. Other Butler
+surfaces retain their normal per-user voice. Unknown pet presets are rejected.
+
+Authenticated pet sessions can send
+`{"type":"voice_preview","voice_preset":"warm","preview_id":1}`.
+The gateway synthesizes a fixed friendly sample locally with Kokoro, without
+calling Butler, recording a transcript or changing the saved voice. All preview
+state, audio-start/end and error messages echo the positive integer `preview_id`.
+Audio uses the usual binary PCM frames. `cancel`, a new preview, or a new spoken
+turn cancels the audition. Firmware discards stale preview IDs and stops buffered
+audio when leaving the selector. Only `Use this voice` persists a selection.
+
+Multiplayer profiles may carry the same `voice_preset`. Each speaker's selection
+is applied to their own chat audio; voice settings are omitted from the dialogue
+prompt. Older profiles retain the configured default voice.

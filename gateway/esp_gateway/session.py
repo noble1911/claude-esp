@@ -25,6 +25,7 @@ from .render import SAMPLE_SVG, svg_to_png
 from .music import render_tune
 from .stt import STT
 from .tts import KokoroTTS
+from .pet_voices import resolve_voice, validate_preset, PREVIEW_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class Session:
         self._utterance_id = 0
         self.pet_mode = False
         self.pet = None
+        self.pet_voice_id = None
 
     # ── outbound helpers ────────────────────────────────────────────
     async def _send(self, **obj) -> None:
@@ -126,7 +128,17 @@ class Session:
             if not isinstance(pet, dict) or len(json.dumps(pet)) > 4096:
                 await self._error("missing_pet", "Fresh pet state required")
                 return
+            try:
+                preset = msg.get("voice_preset")
+                if preset is not None:
+                    validate_preset(preset)
+            except ValueError:
+                await self._error("invalid_voice")
+                return
+            # Finish cancelling the old turn before replacing its voice/state.
+            await self._cancel_turn()
             self.pet = pet
+            self.pet_voice_id = preset
         if self.pet_mode and mtype == P.SET_USER:
             await self._error("pet_user_locked")
             return
@@ -138,6 +150,8 @@ class Session:
             await self._on_audio_end()
         elif mtype == P.TEXT:
             await self._on_text(msg)
+        elif mtype == "voice_preview":
+            await self._on_voice_preview(msg)
         elif mtype == P.SET_USER:
             await self._on_set_user(msg)
         elif mtype == P.CANCEL:
@@ -218,6 +232,46 @@ class Session:
             return
         await self._cancel_turn()  # barge-in
         self._start_turn(self._run_turn(text, proactive=self.pet_mode and msg.get("proactive") is True))
+
+    async def _on_voice_preview(self, msg: dict) -> None:
+        if not self.pet_mode:
+            await self._error("pet_only")
+            return
+        try:
+            preset = validate_preset(msg.get("voice_preset"))
+            preview_id = msg.get("preview_id")
+            if type(preview_id) is not int or not 0 < preview_id <= 2147483647:
+                raise ValueError("Invalid preview identity")
+        except ValueError:
+            await self._error("invalid_voice")
+            return
+        await self._cancel_turn()
+        self._listening = False
+        self._audio.clear()
+        self._start_turn(self._preview_voice(preset, preview_id))
+
+    async def _preview_voice(self, preset: str, preview_id: int) -> None:
+        # Fixed local text: no Butler call, transcript, memory or saved selection.
+        v = resolve_voice(self.deps.config, preset)
+        try:
+            await self._send(type=P.STATE, value=P.STATE_THINKING, preview_id=preview_id)
+            pcm = await asyncio.wait_for(self.deps.tts.synthesize(
+                PREVIEW_TEXT, v.voice, self.playback_rate,
+                speed=v.speed, pitch_semitones=v.pitch), 30)
+            if not pcm:
+                raise ValueError("Empty preview audio")
+            q = asyncio.Queue()
+            q.put_nowait(pcm)
+            q.put_nowait(None)
+            self._utterance_id += 1
+            await self._audio_sender(q, self._utterance_id, preview_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Pet voice preview failed")
+            await self._send(type=P.ERROR, code="preview_error", preview_id=preview_id)
+            return
+        await self._send(type=P.STATE, value=P.STATE_IDLE, preview_id=preview_id)
 
     async def _send_image_svg(self, svg: str) -> None:
         """Rasterize an SVG to PNG and send it as a base64 JSON image message.
@@ -348,9 +402,11 @@ class Session:
             await sender             # wait for playback to finish draining
         except asyncio.CancelledError:
             sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
             raise  # barge-in: leave state control to the canceller
         except Exception as e:  # noqa: BLE001
             sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
             logger.exception("turn failed for user=%s", self.user_id)
             await self._error("brain_error", str(e))
             await self._send(type=P.STATE, value=P.STATE_IDLE)
@@ -360,17 +416,18 @@ class Session:
     async def _synth(self, text: str, audio_q: asyncio.Queue) -> None:
         """Synthesize one sentence and enqueue its PCM (runs ahead of playback)."""
         if self.pet_mode:
+            v = resolve_voice(self.deps.config, self.pet_voice_id)
             pcm = await self.deps.tts.synthesize(
-                text, self.deps.config.pet_voice, self.playback_rate,
-                speed=self.deps.config.pet_speech_speed, pitch_semitones=self.deps.config.pet_pitch_semitones
+                text, v.voice, self.playback_rate, speed=v.speed, pitch_semitones=v.pitch
             )
         else:
             pcm = await self.deps.tts.synthesize(text, self.voice, self.playback_rate)
         if pcm:
             await audio_q.put(pcm)
 
-    async def _audio_sender(self, audio_q: asyncio.Queue, uid: int) -> None:
+    async def _audio_sender(self, audio_q: asyncio.Queue, uid: int, preview_id: int | None = None) -> None:
         """Drain synthesized PCM and stream it to the device, paced ~real-time."""
+        extra = {"preview_id": preview_id} if preview_id is not None else {}
         frame_bytes = int(self.playback_rate * 0.02) * 2  # 20 ms PCM16 mono
         started = False
         sent = 0
@@ -379,8 +436,8 @@ class Session:
             if pcm is None:
                 break
             if not started:
-                await self._send(type=P.STATE, value=P.STATE_SPEAKING)
-                await self._send(type=P.TTS_START, id=uid)
+                await self._send(type=P.STATE, value=P.STATE_SPEAKING, **extra)
+                await self._send(type=P.TTS_START, id=uid, **extra)
                 started = True
             for i in range(0, len(pcm), frame_bytes):
                 await self.conn.send(pcm[i : i + frame_bytes])
@@ -393,7 +450,7 @@ class Session:
                     # accumulate the old 10% lead and overflow it.
                     await asyncio.sleep(0.020 if self.pet_mode else 0.018)
         if started:
-            await self._send(type=P.TTS_END, id=uid)
+            await self._send(type=P.TTS_END, id=uid, **extra)
 
     async def close(self) -> None:
         await self._cancel_turn()

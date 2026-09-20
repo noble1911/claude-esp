@@ -5,6 +5,8 @@ players' reward receipts before a finished round is published. Socket writers
 are independent, so a slow peer cannot block a turn or another device.
 """
 from __future__ import annotations
+
+from .pet_voices import validate_preset, resolve_voice
 import asyncio
 import json
 import logging
@@ -91,6 +93,8 @@ class Playdates:
             if type(v) is not int or not 0 <= v <= maximum:
                 raise ValueError('Invalid pet needs')
             result[key]=v
+        if 'voice_preset' in value:
+            result['voice_preset'] = validate_preset(value['voice_preset'])
         return result
 
     def connect(self, msg, emit, speak=None):
@@ -299,12 +303,13 @@ class Playdates:
     async def chat_round(self, room):
         """One Haiku call, eight alternating lines, no rewards or memory writes."""
         try:
-            pets=[dict(user_id=u, **{k:v for k,v in self.players[u].pet.items() if k!='id'}) for u in room.users]
+            pets=[dict(user_id=u, **{k:v for k,v in self.players[u].pet.items() if k not in ('id','voice_preset')}) for u in room.users]
             lines=await asyncio.wait_for(self.deps.butler.playdate_chat(pets),45)
             for index,line in enumerate(lines):
                 speaker=self.players[room.users[index%2]]
-                pcm=await asyncio.wait_for(self.deps.tts.synthesize(line,self.config.pet_voice,16000,
-                    speed=self.config.pet_speech_speed,pitch_semitones=self.config.pet_pitch_semitones),25)
+                v=resolve_voice(self.config,speaker.pet.get('voice_preset'))
+                pcm=await asyncio.wait_for(self.deps.tts.synthesize(line,v.voice,16000,
+                    speed=v.speed,pitch_semitones=v.pitch),25)
                 if not pcm or len(pcm)>480000 or len(pcm)%2:
                     raise ValueError('Invalid chat audio')
                 room.seq=index+1;room.line=line;room.speaking=True;room.heard=asyncio.Event()
