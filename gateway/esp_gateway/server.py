@@ -56,7 +56,7 @@ async def serve(config: Config | None = None) -> None:
     config = config or load_config()
     deps, client = build_deps(config)
 
-    game = Playdates(config)
+    game = Playdates(config, deps=deps)
     async def ticker():
         while True:
             await asyncio.sleep(1)
@@ -83,5 +83,8 @@ async def serve(config: Config | None = None) -> None:
         finally:
             tick_task.cancel()
             await asyncio.gather(tick_task, return_exceptions=True)
+            chats=[r.chat_task for r in game.rooms.values() if r.chat_task]
+            for task in chats:task.cancel()
+            await asyncio.gather(*chats,return_exceptions=True)
             game.db.close()
             await client.aclose()

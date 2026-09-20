@@ -126,3 +126,14 @@ class ButlerClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def playdate_chat(self, pets: list[dict]) -> list[str]:
+        response = await self._client.post(
+            f'{self.base_url}/api/voice/pet/playdate-chat',
+            json={'pets':pets}, headers=self._headers(), timeout=40.0)
+        response.raise_for_status()
+        lines=response.json().get('lines')
+        if not isinstance(lines,list) or len(lines)!=8 or any(
+                not isinstance(s,str) or not s.strip() or len(s.encode('utf-8'))>160 or len(s.split())>20 or any(ord(c)<32 for c in s) for s in lines):
+            raise ValueError('Invalid pet dialogue')
+        return lines

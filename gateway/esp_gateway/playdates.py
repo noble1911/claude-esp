@@ -1,4 +1,4 @@
-"""Household-only cooperative play. No model, microphone, or Butler calls.
+"""Household-only ball games and bounded, opt-in pet conversations.
 
 Coordinator mutations are synchronous on the asyncio owner. SQLite commits both
 players' reward receipts before a finished round is published. Socket writers
@@ -30,6 +30,8 @@ class Player:
     room: str = ''
     invite: str = ''
     notice: str = ''
+    chat: bool = False
+    speak: object = None
 
 @dataclass
 class Room:
@@ -39,10 +41,18 @@ class Room:
     seq: int = 0
     next_at: float = 0
     again: set = field(default_factory=set)
+    mode: str = 'ball'
+    chat_task: object = None
+    heard: object = None
+    line: str = ''
+    speaking: bool = False
+    chat_done: bool = False
+    error: str = ''
 
 class Playdates:
-    def __init__(self, config, clock=time.monotonic):
+    def __init__(self, config, clock=time.monotonic, deps=None):
         self.config = config
+        self.deps = deps
         self.clock = clock
         self.players = {}
         self.rooms = {}
@@ -74,9 +84,16 @@ class Playdates:
             raise ValueError('Update your pet to play together')
         if type(value.get('stage')) is not int or not 1 <= value['stage'] <= 5:
             raise ValueError('Invalid pet stage')
-        return {k: value[k] for k in ('id', 'name', 'character', 'stage')}
+        result = {k: value[k] for k in ('id', 'name', 'character', 'stage')}
+        for key, maximum, default in [('fullness',100,80),('happiness',100,80),('energy',100,80),
+                                      ('cleanliness',100,80),('stars',4294967295,0),('personality',7,0)]:
+            v = value.get(key,default)
+            if type(v) is not int or not 0 <= v <= maximum:
+                raise ValueError('Invalid pet needs')
+            result[key]=v
+        return result
 
-    def connect(self, msg, emit):
+    def connect(self, msg, emit, speak=None):
         user, token = msg.get('user_id'), msg.get('device_token')
         if not isinstance(user, str) or not isinstance(token, str):
             raise ValueError('Device registration required')
@@ -101,6 +118,8 @@ class Playdates:
                 self.leave(old)
             player = Player(user, group, pet, emit, seen=self.clock())
             self.players[user] = player
+        player.chat = msg.get('chat') == 1 and speak is not None and self.deps is not None
+        player.speak = speak
         LOG.info('playdates connected user=%s', user)
         self.broadcast()
         return player
@@ -110,6 +129,8 @@ class Playdates:
             return
         p.emit = None
         p.seen = self.clock()
+        if p.room in self.rooms and self.rooms[p.room].mode == 'chat':
+            self.leave(p)
         # Lobby invitations end immediately. An accepted room has a reconnect grace.
         if p.invite:
             self.cancel_invite(p.invite, 'Your friend left. Try again later.')
@@ -119,7 +140,7 @@ class Playdates:
         return p.active and p.emit is not None and not p.room and not p.invite
 
     def peer(self, p):
-        return dict(p.pet, user=p.user)
+        return {**{k:p.pet[k] for k in ('id','name','character','stage')}, 'user':p.user,'chat':p.chat}
 
     def pending(self, p):
         row = self.db.execute('SELECT id,friend,friends FROM rewards WHERE user=? AND pet=? AND ack=0 ORDER BY id LIMIT 1', (p.user,p.pet['id'])).fetchone()
@@ -131,14 +152,18 @@ class Playdates:
             room = self.rooms[p.room]
             peer = self.players[room.users[1] if room.users[0] == p.user else room.users[0]]
             online = peer.emit is not None and peer.active
-            msg.update(phase='finished' if room.seq == 10 else 'playing' if online else 'waiting',
+            done = room.chat_done if room.mode == 'chat' else room.seq == 10
+            msg.update(phase='finished' if done else 'playing' if online else 'waiting',
                        room=room.id, seq=room.seq, peer=self.peer(peer), online=online,
                        my_turn=room.users[room.seq % 2] == p.user and online and room.seq < 10,
-                       again=p.user in room.again)
+                       again=p.user in room.again, mode=room.mode)
+            if room.mode == 'chat':
+                msg.update(text=room.line, speaking=room.speaking, notice=room.error,
+                           my_turn=room.users[max(0,room.seq-1)%2] == p.user)
         elif p.invite in self.invites:
-            sender, recipient, _ = self.invites[p.invite]
+            sender, recipient, _, mode = self.invites[p.invite]
             other = recipient if sender == p.user else sender
-            msg.update(phase='outgoing' if sender == p.user else 'incoming', invite=p.invite, peer=self.peer(self.players[other]))
+            msg.update(phase='outgoing' if sender == p.user else 'incoming', invite=p.invite, peer=self.peer(self.players[other]), mode=mode)
         elif p.active:
             msg['peers'] = [self.peer(other) for other in self.players.values()
                             if other.user != p.user and other.group == p.group and self.available(other)][:4]
@@ -163,6 +188,8 @@ class Playdates:
         if p.room:
             room = self.rooms.pop(p.room, None)
             if room:
+                if room.chat_task and not room.chat_task.done() and room.chat_task is not asyncio.current_task():
+                    room.chat_task.cancel()
                 for user in room.users:
                     self.players[user].room = ''
                     self.players[user].notice = 'Your friend went home. See you soon!'
@@ -197,42 +224,56 @@ class Playdates:
             self.leave(p)
         elif kind == 'invite' and self.available(p):
             other = self.players.get(msg.get('user'))
+            mode = msg.get('mode','ball')
+            if mode not in ('ball','chat') or (mode == 'chat' and not (p.chat and other and other.chat)):
+                p.notice='Both pets need the Pet chat update.'
+                self.broadcast()
+                return
             if other and other.user != p.user and other.group == p.group and self.available(other) and other.pet['id'] != p.pet['id']:
                 invite = uuid.uuid4().hex
-                self.invites[invite] = (p.user, other.user, self.clock()+30)
+                self.invites[invite] = (p.user, other.user, self.clock()+30, mode)
                 p.invite = other.invite = invite
                 p.notice = other.notice = ''
             else:
                 p.notice = 'Your friend is busy. Try again soon.'
         elif kind in ('accept', 'decline') and p.invite and msg.get('invite') == p.invite:
-            sender, recipient, expires = self.invites[p.invite]
+            sender, recipient, expires, mode = self.invites[p.invite]
             if kind == 'decline':
                 self.cancel_invite(p.invite, 'Maybe later. Choose a friend to play.')
             elif p.user == recipient and expires > self.clock() and self.players[sender].emit:
                 self.cancel_invite(p.invite)
-                room = Room(uuid.uuid4().hex, (sender,recipient), (self.players[sender].pet['id'],p.pet['id']), next_at=self.clock()+.8)
+                room = Room(uuid.uuid4().hex, (sender,recipient), (self.players[sender].pet['id'],p.pet['id']), next_at=self.clock()+.8, mode=mode)
                 self.rooms[room.id] = room
                 for user in room.users:
                     self.players[user].room = room.id
+                if mode == 'chat':
+                    room.chat_task=asyncio.create_task(self.chat_round(room))
+        elif kind == 'heard' and p.room in self.rooms and msg.get('room') == p.room:
+            room=self.rooms[p.room]
+            if room.mode == 'chat' and room.speaking and type(msg.get('seq')) is int and msg['seq']==room.seq and room.users[(room.seq-1)%2]==p.user:
+                room.heard.set()
         elif kind in ('pass', 'again') and p.room in self.rooms and msg.get('room') == p.room:
             room = self.rooms[p.room]
             online = all(self.players[u].emit and self.players[u].active for u in room.users)
-            if kind == 'pass' and online and room.seq < 10 and type(msg.get('seq')) is int and msg['seq'] == room.seq and room.users[room.seq % 2] == p.user and self.clock() >= room.next_at:
+            if kind == 'pass' and room.mode == 'ball' and online and room.seq < 10 and type(msg.get('seq')) is int and msg['seq'] == room.seq and room.users[room.seq % 2] == p.user and self.clock() >= room.next_at:
                 if room.seq == 9:
                     self.reward_round(room)
                 room.seq += 1
                 room.next_at = self.clock()+.8
-            elif kind == 'again' and online and room.seq == 10:
+            elif kind == 'again' and online and (room.chat_done if room.mode=='chat' else room.seq == 10):
                 room.again.add(p.user)
                 if len(room.again) == 2:
                     del self.rooms[room.id]
                     room.id = uuid.uuid4().hex
                     room.seq = 0
+                    room.line='';room.chat_done=False;room.error=''
                     room.again.clear()
                     room.next_at = self.clock()+.8
                     self.rooms[room.id] = room
                     for user in room.users:
                         self.players[user].room = room.id
+                    if room.mode=='chat':
+                        room.chat_task=asyncio.create_task(self.chat_round(room))
         elif kind == 'ack':
             receipt = self.pending(p)
             if receipt and msg.get('id') == receipt['id'] and msg.get('pet') == p.pet['id']:
@@ -243,7 +284,7 @@ class Playdates:
     def tick(self):
         now = self.clock()
         changed = False
-        for key, (_,_,expires) in list(self.invites.items()):
+        for key, (_,_,expires,_) in list(self.invites.items()):
             if now >= expires:
                 self.cancel_invite(key, 'Invitation finished. Try again!')
                 changed = True
@@ -255,8 +296,41 @@ class Playdates:
         if changed:
             self.broadcast()
 
+    async def chat_round(self, room):
+        """One Haiku call, eight alternating lines, no rewards or memory writes."""
+        try:
+            pets=[dict(user_id=u, **{k:v for k,v in self.players[u].pet.items() if k!='id'}) for u in room.users]
+            lines=await asyncio.wait_for(self.deps.butler.playdate_chat(pets),45)
+            for index,line in enumerate(lines):
+                speaker=self.players[room.users[index%2]]
+                pcm=await asyncio.wait_for(self.deps.tts.synthesize(line,self.config.pet_voice,16000,
+                    speed=self.config.pet_speech_speed,pitch_semitones=self.config.pet_pitch_semitones),25)
+                if not pcm or len(pcm)>480000 or len(pcm)%2:
+                    raise ValueError('Invalid chat audio')
+                room.seq=index+1;room.line=line;room.speaking=True;room.heard=asyncio.Event()
+                self.broadcast()
+                start=self.clock()
+                await speaker.speak(room.id,room.seq,pcm)
+                await asyncio.wait_for(room.heard.wait(),12)
+                # Keep each caption readable even when playback is muted.
+                await asyncio.sleep(max(.5,3-(self.clock()-start)))
+                room.speaking=False
+                self.broadcast()
+            room.chat_done=True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.warning('Pet chat failed',exc_info=True)
+            room.error='A little hiccup. Try Chat again.'
+            room.chat_done=True
+        finally:
+            room.speaking=False
+            if self.rooms.get(room.id) is room:
+                self.broadcast()
+
 async def play_connection(ws, game):
     queue = asyncio.Queue(maxsize=16)
+    send_lock = asyncio.Lock()
     player = None
     writer = None
     writing = True
@@ -265,10 +339,22 @@ async def play_connection(ws, game):
         if queue.full():
             queue.get_nowait()
         queue.put_nowait(json.dumps(msg))
+    async def speak(room, seq, pcm):
+        # One socket writer at a time; speech is paced to the device's 96 KiB buffer.
+        async with send_lock:
+            await ws.send(json.dumps(game.snapshot(player)))
+            await ws.send(json.dumps(dict(type='chat_audio_start',room=room,seq=seq)))
+            for offset in range(0,len(pcm),640):
+                await asyncio.wait_for(ws.send(pcm[offset:offset+640]),5)
+                if offset>=32000:
+                    await asyncio.sleep(.020)
+            await ws.send(json.dumps(dict(type='chat_audio_end',room=room,seq=seq)))
     async def write():
         while writing:
             try:
-                await asyncio.wait_for(ws.send(await queue.get()), timeout=5)
+                await queue.get()
+                async with send_lock:
+                    await asyncio.wait_for(ws.send(json.dumps(game.snapshot(player))), timeout=5)
             except Exception:
                 await ws.close(code=4000, reason='Reconnect to play')
                 return
@@ -279,7 +365,7 @@ async def play_connection(ws, game):
         msg = json.loads(raw)
         if not isinstance(msg,dict) or msg.get('type') != 'hello':
             raise ValueError('Expected hello')
-        player = game.connect(msg, emit)
+        player = game.connect(msg, emit, speak)
         writer = asyncio.create_task(write())
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=18)
