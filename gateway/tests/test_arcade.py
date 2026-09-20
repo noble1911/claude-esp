@@ -16,7 +16,7 @@ def pair(g,mode):
     players=[]
     for i,user in enumerate('ab'):
         pet=dict(id=f'{i+1:016x}',name='Sprout',character=i,stage=1)
-        p=g.connect(dict(proto=1,artwork=3,games=1,user_id=user,device_token=user,pet=pet),lambda m:None)
+        p=g.connect(dict(proto=1,artwork=3,games=2,user_id=user,device_token=user,pet=pet),lambda m:None)
         g.handle(p,dict(type='join',pet=pet));players.append(p)
     a,b=players
     g.handle(a,dict(type='invite',user='b',mode=mode));assert not g.rooms
@@ -78,7 +78,7 @@ def test_leave_disconnect_timeout_and_older_firmware(game):
     g.handle(a,dict(type='invite',user='b',mode='pegs'));assert not g.invites
     assert 'update' in g.snapshot(a)['notice']
     b.games=True;g.handle(a,dict(type='invite',user='b',mode='tilt'));send(g,b,'accept',invite=b.invite)
-    r=g.rooms[a.room];send(g,a,'ready');send(g,b,'ready');now[0]+=65;g.tick()
+    r=g.rooms[a.room];send(g,a,'ready');send(g,b,'ready');now[0]+=215;g.tick()
     assert r.arcade.done and 'timed out' in g.snapshot(a)['notice'] and g.pending(a) is None
 
 def test_reward_save_failure_retries_without_publishing_false_completion(game):
@@ -107,7 +107,7 @@ async def test_two_real_websockets_play_and_receive_same_result(game,mode):
                     if predicate(msg):return msg
             for i,(ws,user) in enumerate(((a,'a'),(b,'b'))):
                 pet=dict(id=f'{i+1:016x}',name='Sprout',character=i,stage=1)
-                await send_ws(ws,type='hello',proto=1,artwork=3,games=1,user_id=user,device_token=user,pet=pet)
+                await send_ws(ws,type='hello',proto=1,artwork=3,games=2,user_id=user,device_token=user,pet=pet)
                 await send_ws(ws,type='join',pet=pet)
             await until(a,lambda s:len(s['peers'])==1)
             await send_ws(a,type='invite',user='b',mode=mode)
@@ -135,3 +135,18 @@ async def test_two_real_websockets_play_and_receive_same_result(game,mode):
             assert sa['reward'] and sb['reward']
             await send_ws(a,type='leave')
             await until(b,lambda s:s['phase']=='lobby')
+
+def test_progressive_round_limits_scores_and_old_rules_capability(game):
+    g,now=game;a,b,r=pair(g,'tilt')
+    send(g,a,'ready');send(g,b,'ready')
+    assert g.snapshot(a)['remaining_ms']==183000
+    now[0]+=100;g.tick();assert not r.arcade.done
+    send(g,a,'score',score=12000);send(g,b,'score',score=11000)
+    assert r.arcade.done and r.arcade.scores==[12000,11000]
+    g.leave(a);g.leave(b);g.disconnect(b)
+    pet=dict(id='0000000000000002',name='Olive',character=0,stage=1)
+    old=g.connect(dict(proto=1,artwork=3,games=1,user_id='b',device_token='b',pet=pet),lambda m:None)
+    assert not old.games
+    g.handle(old,dict(type='join',pet=pet));g.handle(a,dict(type='join',pet=a.pet))
+    g.handle(a,dict(type='invite',user='b',mode='pegs'))
+    assert not g.invites and 'update' in g.snapshot(a)['notice']

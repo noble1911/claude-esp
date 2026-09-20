@@ -26,7 +26,7 @@ class ArcadeRound:
 
     def snapshot(self, index, now):
         countdown=max(0,int((self.start-now)*1000)) if self.start is not None else 0
-        limit=45 if self.mode=='tilt' else 600 if self.mode=='memory' else 180
+        limit=600 if self.mode=='memory' else 180
         remaining=max(0,int((self.start+limit-now)*1000)) if self.start is not None else limit*1000
         visible=[self.deck[i] if self.matched&(1<<i) or i in self.flips else -1 for i in range(12)] if self.mode=='memory' else []
         return dict(seed=0 if self.mode=='memory' else self.seed,ready=index in self.ready,started=self.start is not None,
@@ -46,8 +46,8 @@ class ArcadeRound:
         if kind=='score' and self.mode in ('pegs','tilt') and index not in self.submitted:
             score=msg.get('score')
             if type(score) is not int or score<0:return
-            if self.mode=='pegs' and (score>20000 or score%5 or now<self.start+1):return
-            if self.mode=='tilt' and (score>10000 or score%100 or now<self.start+44):return
+            if self.mode=='pegs' and (score>200000 or score%5 or now<self.start+1):return
+            if self.mode=='tilt' and (score>50000 or score%100 or now<self.start+44):return
             self.scores[index]=score;self.submitted.add(index);self.seq+=1
             self.done=len(self.submitted)==2
         if kind=='flip' and self.mode=='memory' and self.turn==index and self.hide_at is None:
@@ -67,6 +67,6 @@ class ArcadeRound:
             else:self.turn=1-self.turn
             self.flips=[];self.hide_at=None;self.seq+=1;changed=True
             if self.matched==4095:self.done=True;self.submitted={0,1}
-        if self.start is not None and now>=self.start+(60 if self.mode=='tilt' else 660 if self.mode=='memory' else 210) and not self.done:
+        if self.start is not None and now>=self.start+(660 if self.mode=='memory' else 210) and not self.done:
             self.done=True;self.error='Round timed out. Try playing again.';changed=True
         return changed

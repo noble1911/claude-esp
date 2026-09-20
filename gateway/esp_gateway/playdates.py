@@ -127,7 +127,7 @@ class Playdates:
             self.players[user] = player
         player.chat = msg.get('chat') == 1 and speak is not None and self.deps is not None
         player.speak = speak
-        player.games = type(msg.get("games")) is int and msg["games"] == 1
+        player.games = type(msg.get("games")) is int and msg["games"] == 2
         LOG.info('playdates connected user=%s', user)
         self.broadcast()
         return player
