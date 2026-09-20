@@ -43,6 +43,21 @@ def test_auth_scope_and_protocol(game):
     assert not a.invite
     with pytest.raises(ValueError):player(game)
 
+def test_osono_profile_is_preserved_through_invitation_and_round(game):
+    h=hello();h['pet']['character']=7;h['pet']['name']='Olive'
+    a=game.connect(h,lambda msg:None)
+    game.handle(a,dict(type='join',pet=h['pet']))
+    b=player(game,'bob','b','0000000000000002')
+    assert game.snapshot(b)['peers'][0]['character']==7
+    game.handle(a,dict(type='invite',user='bob'))
+    assert game.snapshot(b)['peer']['character']==7
+    game.handle(b,dict(type='accept',invite=b.invite))
+    assert game.snapshot(b)['peer']['character']==7
+    finish(game,a,b)
+    assert game.pending(a)['friends']==1
+    for invalid in (-1,8,255,True,7.5,'7'):
+        with pytest.raises(ValueError):Playdates.profile(dict(h['pet'],character=invalid))
+
 def test_presence_explicit_accept_and_crossed_invite(game):
     a=player(game);b=player(game,'bob','b','0000000000000002')
     assert game.snapshot(a)['peers'][0]['user']=='bob'

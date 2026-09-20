@@ -70,7 +70,7 @@ class Playdates:
             raise ValueError('Invalid pet identity')
         if not NAME.fullmatch(str(value.get('name', ''))):
             raise ValueError('Invalid pet name')
-        if type(value.get('character')) is not int or not 0 <= value['character'] < 7:
+        if type(value.get('character')) is not int or not 0 <= value['character'] < 8:
             raise ValueError('Update your pet to play together')
         if type(value.get('stage')) is not int or not 1 <= value['stage'] <= 5:
             raise ValueError('Invalid pet stage')
