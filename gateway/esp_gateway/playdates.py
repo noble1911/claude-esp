@@ -259,13 +259,14 @@ async def play_connection(ws, game):
     queue = asyncio.Queue(maxsize=16)
     player = None
     writer = None
+    writing = True
     def emit(msg):
         # Every message is a full snapshot. Coalesce when a peer is slow.
         if queue.full():
             queue.get_nowait()
         queue.put_nowait(json.dumps(msg))
     async def write():
-        while True:
+        while writing:
             try:
                 await asyncio.wait_for(ws.send(await queue.get()), timeout=5)
             except Exception:
@@ -300,6 +301,7 @@ async def play_connection(ws, game):
             player = None
         await ws.close(code=4000, reason='Reconnect to play')
     finally:
+        writing = False
         if writer:
             writer.cancel()
             await asyncio.gather(writer,return_exceptions=True)
