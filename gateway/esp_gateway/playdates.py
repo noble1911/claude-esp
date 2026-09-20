@@ -7,6 +7,7 @@ are independent, so a slow peer cannot block a turn or another device.
 from __future__ import annotations
 
 from .pet_voices import validate_preset, resolve_voice
+from .arcade import ArcadeRound, MODES
 import asyncio
 import json
 import logging
@@ -34,6 +35,7 @@ class Player:
     notice: str = ''
     chat: bool = False
     speak: object = None
+    games: bool = False
 
 @dataclass
 class Room:
@@ -50,6 +52,7 @@ class Room:
     speaking: bool = False
     chat_done: bool = False
     error: str = ''
+    arcade: object = None
 
 class Playdates:
     def __init__(self, config, clock=time.monotonic, deps=None):
@@ -124,6 +127,7 @@ class Playdates:
             self.players[user] = player
         player.chat = msg.get('chat') == 1 and speak is not None and self.deps is not None
         player.speak = speak
+        player.games = type(msg.get("games")) is int and msg["games"] == 1
         LOG.info('playdates connected user=%s', user)
         self.broadcast()
         return player
@@ -133,7 +137,7 @@ class Playdates:
             return
         p.emit = None
         p.seen = self.clock()
-        if p.room in self.rooms and self.rooms[p.room].mode == 'chat':
+        if p.room in self.rooms and self.rooms[p.room].mode != 'ball':
             self.leave(p)
         # Lobby invitations end immediately. An accepted room has a reconnect grace.
         if p.invite:
@@ -144,7 +148,7 @@ class Playdates:
         return p.active and p.emit is not None and not p.room and not p.invite
 
     def peer(self, p):
-        return {**{k:p.pet[k] for k in ('id','name','character','stage')}, 'user':p.user,'chat':p.chat}
+        return {**{k:p.pet[k] for k in ('id','name','character','stage')}, 'user':p.user,'chat':p.chat,'games':p.games}
 
     def pending(self, p):
         row = self.db.execute('SELECT id,friend,friends FROM rewards WHERE user=? AND pet=? AND ack=0 ORDER BY id LIMIT 1', (p.user,p.pet['id'])).fetchone()
@@ -156,11 +160,13 @@ class Playdates:
             room = self.rooms[p.room]
             peer = self.players[room.users[1] if room.users[0] == p.user else room.users[0]]
             online = peer.emit is not None and peer.active
-            done = room.chat_done if room.mode == 'chat' else room.seq == 10
+            done = room.arcade.done if room.arcade else room.chat_done if room.mode == 'chat' else room.seq == 10
             msg.update(phase='finished' if done else 'playing' if online else 'waiting',
                        room=room.id, seq=room.seq, peer=self.peer(peer), online=online,
                        my_turn=room.users[room.seq % 2] == p.user and online and room.seq < 10,
                        again=p.user in room.again, mode=room.mode)
+            if room.arcade:
+                msg.update(room.arcade.snapshot(room.users.index(p.user),self.clock()))
             if room.mode == 'chat':
                 msg.update(text=room.line, speaking=room.speaking, notice=room.error,
                            my_turn=room.users[max(0,room.seq-1)%2] == p.user)
@@ -229,10 +235,12 @@ class Playdates:
         elif kind == 'invite' and self.available(p):
             other = self.players.get(msg.get('user'))
             mode = msg.get('mode','ball')
-            if mode not in ('ball','chat') or (mode == 'chat' and not (p.chat and other and other.chat)):
+            if mode not in ('ball','chat',*MODES) or (mode == 'chat' and not (p.chat and other and other.chat)):
                 p.notice='Both pets need the Pet chat update.'
                 self.broadcast()
                 return
+            if mode in MODES and not (p.games and other and other.games):
+                p.notice='Both pets need the new games update.';self.broadcast();return
             if other and other.user != p.user and other.group == p.group and self.available(other) and other.pet['id'] != p.pet['id']:
                 invite = uuid.uuid4().hex
                 self.invites[invite] = (p.user, other.user, self.clock()+30, mode)
@@ -247,12 +255,18 @@ class Playdates:
             elif p.user == recipient and expires > self.clock() and self.players[sender].emit:
                 self.cancel_invite(p.invite)
                 room = Room(uuid.uuid4().hex, (sender,recipient), (self.players[sender].pet['id'],p.pet['id']), next_at=self.clock()+.8, mode=mode)
+                if mode in MODES:room.arcade=ArcadeRound(mode)
                 self.rooms[room.id] = room
                 for user in room.users:
                     self.players[user].room = room.id
                 if mode == 'chat':
                     room.chat_task=asyncio.create_task(self.chat_round(room))
-        elif kind == 'heard' and p.room in self.rooms and msg.get('room') == p.room:
+        elif kind in ('ready','score','flip') and p.room in self.rooms and msg.get('room')==p.room:
+            room=self.rooms[p.room]
+            if room.arcade and all(self.players[u].emit and self.players[u].active for u in room.users):
+                room.arcade.action(room.users.index(p.user),msg,self.clock())
+                self.arcade_reward(room)
+        elif kind == 'heard'  and p.room in self.rooms and msg.get('room') == p.room:
             room=self.rooms[p.room]
             if room.mode == 'chat' and room.speaking and type(msg.get('seq')) is int and msg['seq']==room.seq and room.users[(room.seq-1)%2]==p.user:
                 room.heard.set()
@@ -264,13 +278,14 @@ class Playdates:
                     self.reward_round(room)
                 room.seq += 1
                 room.next_at = self.clock()+.8
-            elif kind == 'again' and online and (room.chat_done if room.mode=='chat' else room.seq == 10):
+            elif kind == 'again' and online and (room.arcade.done if room.arcade else room.chat_done if room.mode=='chat' else room.seq == 10):
                 room.again.add(p.user)
                 if len(room.again) == 2:
                     del self.rooms[room.id]
                     room.id = uuid.uuid4().hex
                     room.seq = 0
                     room.line='';room.chat_done=False;room.error=''
+                    if room.arcade:room.arcade=ArcadeRound(room.mode)
                     room.again.clear()
                     room.next_at = self.clock()+.8
                     self.rooms[room.id] = room
@@ -285,6 +300,18 @@ class Playdates:
                     self.db.execute('UPDATE rewards SET ack=1 WHERE id=? AND user=? AND pet=?', (receipt['id'],p.user,p.pet['id']))
         self.broadcast()
 
+    def arcade_reward(self,room):
+        a=room.arcade
+        if a and (a.done or a.reward_pending) and (not a.error or a.reward_pending) and not a.rewarded:
+            try:
+                self.reward_round(room)
+            except sqlite3.DatabaseError:
+                a.reward_pending=True;a.done=False;a.error='Saving your round...'
+                return False
+            a.rewarded=True;a.reward_pending=False;a.done=True;a.error=''
+            return True
+        return False
+
     def tick(self):
         now = self.clock()
         changed = False
@@ -297,6 +324,12 @@ class Playdates:
                 self.leave(p)
                 del self.players[p.user]
                 changed = True
+        for room in self.rooms.values():
+            if room.arcade:
+                changed=room.arcade.tick(now) or changed
+                changed=self.arcade_reward(room) or changed
+                # Publish countdowns/time to both players without device clocks.
+                if room.arcade.start is not None and not room.arcade.done:changed=True
         if changed:
             self.broadcast()
 
