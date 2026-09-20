@@ -19,3 +19,5 @@ firmware/main/secrets.h
 
 # macOS
 .DS_Store
+
+gateway/.playdates/

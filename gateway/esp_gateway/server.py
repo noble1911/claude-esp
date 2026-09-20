@@ -14,6 +14,7 @@ from .config import Config, load_config
 from .session import Deps, HandshakeError, Session
 from .stt import make_stt
 from .tts import KokoroTTS
+from .playdates import Playdates, play_connection
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,16 @@ async def serve(config: Config | None = None) -> None:
     config = config or load_config()
     deps, client = build_deps(config)
 
+    game = Playdates(config)
+    async def ticker():
+        while True:
+            await asyncio.sleep(1)
+            game.tick()
     async def handler(websocket):
-        await _connection(websocket, deps)
+        if websocket.path == "/play":
+            await play_connection(websocket, game)
+        else:
+            await _connection(websocket, deps)
 
     async with websockets.serve(
         handler,
@@ -68,7 +77,11 @@ async def serve(config: Config | None = None) -> None:
         max_size=2**20,
     ):
         logger.info("esp-gateway listening on ws://%s:%d", config.host, config.port)
+        tick_task = asyncio.create_task(ticker())
         try:
             await asyncio.Future()  # run forever
         finally:
+            tick_task.cancel()
+            await asyncio.gather(tick_task, return_exceptions=True)
+            game.db.close()
             await client.aclose()

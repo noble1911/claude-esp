@@ -45,6 +45,9 @@ class Config:
     device_tokens: dict[str, list[str]] = field(default_factory=dict)
     allow_insecure: bool = False  # if True and no tokens configured, accept any token
 
+    playdates_groups: dict[str, str] = field(default_factory=dict)
+    playdates_db: str = ".playdates/playdates.sqlite3"
+
     @property
     def stt_backend(self) -> str:
         """'groq' when a key is present, else 'null' (text-only / dev)."""
@@ -109,4 +112,8 @@ def load_config() -> Config:
             "local dev, or configure tokens for production. All connections will be "
             "REJECTED until then."
         )
+    cfg.playdates_groups = json.loads(os.environ.get("PET_PLAYDATE_GROUPS") or "{}")
+    cfg.playdates_db = os.environ.get("PET_PLAYDATE_DB", cfg.playdates_db)
+    if not isinstance(cfg.playdates_groups,dict) or any(not isinstance(user,str) or not isinstance(group,str) or not group for user,group in cfg.playdates_groups.items()):
+        raise ValueError("PET_PLAYDATE_GROUPS must map registered user IDs to household names")
     return cfg
